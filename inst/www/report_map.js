@@ -1,4 +1,7 @@
+var active_map_type = "";
+var active_version = "";
 var active_mapping = {};
+
 var last_code_highlight = "";
 var last_cell_highlights = [];
 
@@ -73,16 +76,46 @@ function highlight_cells(tabid, cell_ids_string) {
     }, 150);
 }
 
+// Function to update the version selector based on the active map type
+function update_version_selector() {
+    const versions = Object.keys(all_maps[active_map_type] || {});
+    const version_selector = $("#version_selector");
+    version_selector.empty();
+    versions.forEach(function(v) {
+        version_selector.append($("<option></option>").attr("value", v).text(v));
+    });
+}
+
+
 $(document).ready(function() {
-    const versions = Object.keys(all_maps);
-    if (versions.length > 0) {
-        active_mapping = all_maps[versions[0]];
-        apply_static_coloring(active_mapping);
+    const map_types = Object.keys(all_maps);
+    if (map_types.length === 0) {
+        $(".controls-div").hide();
+        return;
     }
 
+    // -- Initialize Controls and State --
+    active_map_type = $("#map_type_selector").val();
+    update_version_selector();
+    $("#version_selector").trigger("change"); // Set initial mapping and coloring
+
+    // -- Event Handlers --
+
+    // Change map type
+    $("#map_type_selector").on("change", function() {
+        active_map_type = $(this).val();
+        update_version_selector();
+        $("#version_selector").trigger("change"); // Cascade change to update mapping
+    });
+
+    // Change map version
     $("#version_selector").on("change", function() {
-        const selected_version = $(this).val();
-        active_mapping = all_maps[selected_version];
+        active_version = $(this).val();
+        if (active_map_type && active_version && all_maps[active_map_type] && all_maps[active_map_type][active_version]) {
+            active_mapping = all_maps[active_map_type][active_version];
+        } else {
+            active_mapping = {};
+        }
         clear_all_highlights();
         apply_static_coloring(active_mapping);
     });
