@@ -1,3 +1,5 @@
+// FILE: report_map.js
+
 var active_map_type = "";
 var active_version = "";
 var active_mapping = {};
@@ -17,7 +19,12 @@ function clear_all_highlights() {
 }
 
 function clear_static_coloring() {
-    $(".statically-colored").removeClass("statically-colored").css("background-color", "");
+    // We must iterate over each element to remove the specific style
+    // property that was set with '!important'. Standard .css() won't work.
+    $(".statically-colored").each(function() {
+        this.style.removeProperty('background-color');
+        $(this).removeClass("statically-colored");
+    });
 }
 
 function apply_static_coloring(mapping) {
@@ -32,13 +39,20 @@ function apply_static_coloring(mapping) {
                 const cell_ids = info.cell_ids.split(',');
                 cell_ids.forEach(id => {
                     const cell_selector = "#" + id.trim();
-                    $(cell_selector).css('background-color', info.color).addClass('statically-colored');
+                    const element = $(cell_selector);
+
+                    if (element.length > 0) {
+                        // Use the DOM element's setProperty method to add '!important'.
+                        // This ensures our coloring rule has the highest priority and will
+                        // override any conflicting styles (like from Bootstrap or other CSS).
+                        element[0].style.setProperty('background-color', info.color, 'important');
+                        element.addClass('statically-colored');
+                    }
                 });
             }
         }
     }
 }
-
 
 function highlight_code(script_num, line_num) {
     $("#dotabs a[href='#dotab_" + script_num + "']").tab("show");
@@ -94,18 +108,14 @@ $(document).ready(function() {
         return;
     }
 
-    // -- Initialize Controls and State --
-    active_map_type = $("#map_type_selector").val();
-    update_version_selector();
-    $("#version_selector").trigger("change"); // Set initial mapping and coloring
-
-    // -- Event Handlers --
+    // --- 1. DEFINE EVENT HANDLERS FIRST ---
 
     // Change map type
     $("#map_type_selector").on("change", function() {
         active_map_type = $(this).val();
         update_version_selector();
-        $("#version_selector").trigger("change"); // Cascade change to update mapping
+        // Trigger the version change to update the mapping and view
+        $("#version_selector").trigger("change");
     });
 
     // Change map version
@@ -114,6 +124,7 @@ $(document).ready(function() {
         if (active_map_type && active_version && all_maps[active_map_type] && all_maps[active_map_type][active_version]) {
             active_mapping = all_maps[active_map_type][active_version];
         } else {
+            // Reset if no valid mapping is found
             active_mapping = {};
         }
         clear_all_highlights();
@@ -148,4 +159,17 @@ $(document).ready(function() {
             highlight_cells(mapping.tabid, mapping.cell_ids);
         }
     });
+
+    // --- 2. RUN INITIALIZATION LOGIC ---
+
+    // Set the initial map type from the first option in the selector
+    active_map_type = $("#map_type_selector").val();
+
+    // Populate the version selector based on the initial map type
+    update_version_selector();
+
+    // Now, trigger the change event on the version selector.
+    // Since the handler is already attached, this will correctly
+    // set the initial active_mapping and apply static colors.
+    $("#version_selector").trigger("change");
 });

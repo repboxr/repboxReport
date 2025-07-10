@@ -31,7 +31,7 @@ rr_map_report <- function(project_dir,
                           output_file = "map_report.html",
                           doc_type = "art",
                           opts = NULL) {
-
+  restore.point("rr_map_report")
   # --- 0. Check dependencies & Options ---
   pkgs <- c("dplyr", "tidyr", "stringi", "htmltools", "jsonlite", "purrr", "randtoolbox")
   for (pkg in pkgs) {
@@ -81,10 +81,16 @@ rr_map_report <- function(project_dir,
   message("Generating HTML components...")
 
   # Generate color map for consistent colors across all loaded maps
-  all_map_dfs <- unlist(lapply(all_map_types, function(type_list) lapply(type_list, `[[`, "df")), recursive = FALSE)
+  all_map_types
+  all_map_dfs <- unlist(all_map_types, recursive = FALSE)
+  all_map_dfs
   all_reg_inds <- unique(unlist(lapply(all_map_dfs, function(df) if("reg_ind" %in% names(df)) unique(df$reg_ind) else NULL)))
+
   all_reg_inds <- stats::na.omit(all_reg_inds)
+
   reg_color_map <- rr_make_distinct_colors(length(all_reg_inds))
+  reg_color_map
+
   names(reg_color_map) <- all_reg_inds
 
   js_maps_data <- rr_make_js_maps_data(all_map_types, reg_color_map, parcels$stata_source$script_source)
@@ -177,21 +183,23 @@ rr_load_all_map_versions <- function(project_dir, doc_type, prod_id) {
   return(df_list)
 }
 
-#' @describeIn rr_map_report Generate JS object with maps for interactivity.
 rr_make_js_maps_data <- function(all_map_types, reg_color_map, stata_source) {
+  restore.point("rr_make_js_maps_data")
   # Use purrr::map to iterate over named lists while preserving names.
   # This creates the nested object structure required by the JavaScript.
   processed_types <- purrr::map(all_map_types, function(map_list_for_type) {
     purrr::map(map_list_for_type, function(map_df) {
 
       if (is.null(map_df) || nrow(map_df) == 0) {
-        return(list(cell_to_code = list(), code_to_cells = list(), reg_info = list()))
+        # Ensure reg_info is an empty NAMED list to become {} not [] in JSON
+        return(list(cell_to_code = list(), code_to_cells = list(), reg_info = setNames(list(), character(0))))
       }
 
       # --- Standardize map_df columns ---
       # Add script_num if missing (e.g., for map_reg_static)
       if (!"script_num" %in% names(map_df) && "script_file" %in% names(map_df)) {
-        script_info <- stata_source %>% dplyr::select(file_path, script_num)
+        # Ensure we only have unique file_paths before joining
+        script_info <- stata_source %>% dplyr::select(file_path, script_num) %>% dplyr::distinct(file_path, .keep_all = TRUE)
         map_df <- map_df %>%
           dplyr::left_join(script_info, by = c("script_file" = "file_path"))
       }
@@ -234,7 +242,8 @@ rr_make_js_maps_data <- function(all_map_types, reg_color_map, stata_source) {
       } else { list() }
 
       # Regression Info for static coloring
-      reg_info <- list()
+      reg_info <- setNames(list(), character(0)) # Initialize as an empty named list
+      restore.point("lsfhkdhf")
       if ("reg_ind" %in% names(map_df) && length(reg_color_map) > 0) {
         reg_df <- map_df %>%
           dplyr::filter(!is.na(reg_ind), !is.na(cell_ids), cell_ids != "") %>%
@@ -243,20 +252,22 @@ rr_make_js_maps_data <- function(all_map_types, reg_color_map, stata_source) {
           dplyr::summarise(all_cell_ids = paste(unique(trimws(unlist(strsplit(cell_ids, ",")))), collapse = ","), .groups = "drop")
 
         if (nrow(reg_df) > 0) {
-          reg_info <- setNames(
-            lapply(1:nrow(reg_df), function(i) {
+          reg_info_list <- lapply(1:nrow(reg_df), function(i) {
+              reg_index_char <- as.character(reg_df$reg_ind[i])
               # Check if the reg_ind exists in the color map to avoid errors
-              if (as.character(reg_df$reg_ind[i]) %in% names(reg_color_map)) {
+              if (reg_index_char %in% names(reg_color_map)) {
                 list(
-                  color = reg_color_map[[as.character(reg_df$reg_ind[i])]],
+                  color = reg_color_map[[reg_index_char]],
                   cell_ids = reg_df$all_cell_ids[i]
                 )
               } else { NULL }
-            }),
-            reg_df$reg_ind
-          )
+            })
+
+          # Name the list elements by reg_ind
+          names(reg_info_list) <- reg_df$reg_ind
+
           # Remove any NULLs that might have resulted from missing colors
-          reg_info <- reg_info[!sapply(reg_info, is.null)]
+          reg_info <- reg_info_list[!sapply(reg_info_list, is.null)]
         }
       }
 
@@ -265,7 +276,6 @@ rr_make_js_maps_data <- function(all_map_types, reg_color_map, stata_source) {
   })
   jsonlite::toJSON(processed_types, auto_unbox = TRUE, null = "null", na = "null")
 }
-
 
 #' @describeIn rr_map_report Generate HTML for the Stata do-file panel.
 rr_make_do_panel_html <- function(stata_source, stata_cmd, stata_run_cmd, stata_run_log, opts) {

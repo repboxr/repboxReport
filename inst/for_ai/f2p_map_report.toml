@@ -1,6 +1,6 @@
 project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
 schema_dir = "/home/rstudio/repbox/gemini/repboxAI/inst/prod_schemas"
-report_dir = "~/repbox/projects_gha_old2/aejapp_1_3_6/reports"
+report_dir = "~/repbox/projects_gha_new/aejapp_10_4_6/reports"
 repboxHtml_dir = "/home/rstudio/repbox/repboxHtml"
 
 include_files = '''
@@ -31,6 +31,12 @@ Below are relevant files from my R project.
 ################################################
 
 {{inst_www}}
+
+############################################################
+# A created example map_report.html file from a true project
+############################################################
+
+{{report_html}}
 
 ################################################
 # Data sets
@@ -98,6 +104,13 @@ include_files = '''
 {{schema_dir}}/tab_html.json
 '''
 
+[[report_html]]
+
+include_files = '''
+{{report_dir}}/map_report.html
+'''
+
+
 ################################################
 # Special handling for R code
 ################################################
@@ -111,6 +124,8 @@ R/*.r
 include_files  = '''
 inst/www/*.*
 '''
+
+
 
 [[README]]
 include_files = "README.md"
