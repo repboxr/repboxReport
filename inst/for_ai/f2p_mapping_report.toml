@@ -1,0 +1,104 @@
+project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
+schema_dir = "/home/rstudio/repbox/gemini/repboxAI/inst/prod_schemas"
+report_dir = "~/repbox/projects_gha_old2/aejapp_1_3_6/reports"
+repboxai_dir = "/home/rstudio/repbox/gemini/repboxAI"
+
+include_files = '''
+'''
+exclude_files = '''
+*.toml
+'''
+
+template = '''
+
+We want R code that generates interactive HTML reports using JS and possibly dynamic
+data loading, that visualize mappings between regressions in tables of scientific articles
+and the corresponding regression commands in Stata do files of the reproduction package.
+
+The Stata scripts and infos on commands, as well as logs of the outputs are for a project
+in the following data files. Here shown for one example project:
+
+{{repdb}}
+
+Mappings are extracted and stored as data frames where each row follow the following schemas:
+
+{{schemas}}
+
+Note that for each table like map_reg_run there can be multiple data sets corresponding to different
+AI models. The generated HTML should allow to switch between versions in the visualzation.
+
+
+An example of a related report (based on older versions of the data structure) are here:
+
+{{reports}}
+
+
+Create an R script report_mapping.R which will be part of my package repboxAI. Here are
+its current R files:
+
+{{repboxai}}
+
+##################################
+# Your Task
+##################################
+
+Based on the info above create the script report_mapping.R that allows to generate interactive HTML reports using JS and possibly dynamic
+data loading, that visualize mappings between regressions in tables of scientific articles
+and the corresponding regression commands in Stata do files of the reproduction package.
+
+Assume data sets using the table names described further above will be passed to the
+main function.
+
+'''
+
+
+file_template = '''
+
+# FILE: {{filename}}
+```
+{{filetext}}
+```
+# END OF FILE: {{filename}}
+
+-----------------------------------------------------------
+'''
+
+
+[[repdb]]
+
+include_files = '''
+{{project_dir}}/repdb/stata_source.Rds
+{{project_dir}}/repdb/stata_run_cmd.Rds
+{{project_dir}}/repdb/stata_cmd.Rds
+{{project_dir}}/repdb/stata_run_log.Rds
+'''
+
+group_template = '''
+################################################
+# Readme file
+################################################
+{{files}}
+'''
+
+
+[[schemas]]
+
+include_files = '''
+{{schema_dir}}/map_reg_run.json
+{{schema_dir}}/map_reg_static.json
+{{schema_dir}}/map_inv_reg_run.json
+{{schema_dir}}/tab_html.json
+'''
+
+[[reports]]
+
+include_files = '''
+{{report_dir}}/do_tab.html
+{{report_dir}}/repbox_links.js
+'''
+
+[[repboxai]]
+
+include_files = '''
+{{repboxai_dir}}/R/*.R
+'''
