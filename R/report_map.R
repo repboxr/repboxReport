@@ -1,0 +1,444 @@
+#' @importFrom stats na.omit
+NULL
+
+example = function() {
+  # The project_dir needs to be set to a valid repbox project
+  project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
+
+  rr_map_report(project_dir)
+  rstudioapi::filesPaneNavigate(project_dir)
+}
+
+#' Creates an interactive HTML report to visualize maps
+#'
+#' This function generates a self-contained HTML report that visualizes the
+#' maps between Stata do-files and regression tables. The report features
+#' static color-coding for regression cells and interactive highlighting.
+#'
+#' @param project_dir The root directory of the project.
+#' @param output_dir Directory for the report. Defaults to 'reports' in project_dir.
+#' @param output_file The name of the HTML report file.
+#' @param doc_type The document type (e.g., "art", "app1").
+#' @param map_prod_id The product ID for the regression maps.
+#' @return The path to the generated HTML report file.
+#' @export
+rr_map_report <- function(project_dir,
+                              output_dir = file.path(project_dir, "reports"),
+                              output_file = "map_report.html",
+                              doc_type = "art",
+                              map_prod_id = "map_reg_run") {
+
+  # --- 0. Check dependencies ---
+  pkgs <- c("dplyr", "tidyr", "stringi", "htmltools", "jsonlite", "purrr", "randtoolbox")
+  for (pkg in pkgs) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      stop(paste("Please install the '", pkg, "' package."), call. = FALSE)
+    }
+  }
+
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+
+  # --- 1. Setup asset paths ---
+  assets_dir <- file.path(output_dir, "shared")
+  if (!dir.exists(assets_dir)) {
+    dir.create(assets_dir, recursive = TRUE)
+  }
+
+  # --- 2. Load data ---
+  message("Loading data...")
+  parcels <- repboxDB::repdb_load_parcels(project_dir, c("stata_source", "stata_run_cmd", "stata_run_log", "stata_cmd"))
+
+  fp_dir <- file.path(project_dir, "fp", paste0("prod_", doc_type))
+  tab_main_info <- rai_pick_tab_ver(fp_dir, "tab_main")
+  if(nrow(tab_main_info) == 0) {
+      stop("Could not find a suitable 'tab_main' product for doc_type '", doc_type, "'")
+  }
+  tab_main <- fp_load_prod_df(tab_main_info$ver_dir)
+
+  map_list <- rr_load_all_map_versions(project_dir, doc_type, prod_id = map_prod_id)
+  if(length(map_list) == 0) {
+      warning("No map versions found for prod_id '", map_prod_id, "'. The report will be generated without interactive links.")
+  }
+
+  # --- 3. Generate HTML & JS components ---
+  message("Generating HTML components...")
+
+  # Generate color map for consistent colors across map versions
+  all_reg_inds <- unique(unlist(lapply(map_list, function(df) if("reg_ind" %in% names(df)) unique(df$reg_ind) else NULL)))
+  all_reg_inds <- stats::na.omit(all_reg_inds)
+  reg_color_map <- rr_make_distinct_colors(length(all_reg_inds))
+  names(reg_color_map) <- all_reg_inds
+
+  js_maps_data <- rr_make_js_maps(map_list, reg_color_map)
+
+  # Add a script_file column for easier access
+  parcels$stata_source$script_source$script_file <- basename(parcels$stata_source$script_source$file_path)
+
+  do_panel_html <- rr_make_do_panel_html(
+    stata_source = parcels$stata_source$script_source,
+    stata_cmd = parcels$stata_cmd$stata_cmd,
+    stata_run_cmd = parcels$stata_run_cmd$stata_run_cmd,
+    stata_run_log = parcels$stata_run_log$stata_run_log
+  )
+
+  tab_panel_html <- rr_make_tab_panel_html(tab_main)
+  version_selector_html <- rr_make_version_selector_html(names(map_list))
+
+  # --- 4. Write JS and CSS assets ---
+  message("Writing JS and CSS assets...")
+  rr_copy_pkg_assets(output_dir)
+
+  # --- 5. Assemble and write final HTML report ---
+  message("Assembling final HTML report...")
+
+  html_content <- htmltools::tagList(
+    htmltools::tags$head(
+      htmltools::tags$meta(charset = "UTF-8"),
+      htmltools::tags$meta(`http-equiv` = "X-UA-Compatible", content = "IE=edge"),
+      htmltools::tags$meta(name="viewport", content="width=device-width, initial-scale=1"),
+      htmltools::tags$title(paste("map Report:", basename(project_dir))),
+      htmltools::tags$link(href = "shared/bootstrap.min.css", rel = "stylesheet"),
+      htmltools::tags$link(href = "shared/repbox.css", rel = "stylesheet")
+    ),
+    htmltools::tags$body(
+      htmltools::tags$div(class = "container-fluid",
+        htmltools::HTML(version_selector_html),
+        htmltools::tags$div(class = "row", style = "height: 95vh;",
+          htmltools::tags$div(id = "do-col-div", class = "col-sm-7",
+            htmltools::HTML(do_panel_html)
+          ),
+          htmltools::tags$div(id = "tabs-col-div", class = "col-sm-5",
+            htmltools::HTML(tab_panel_html)
+          )
+        )
+      ),
+      htmltools::tags$script(src = "shared/jquery.min.js"),
+      htmltools::tags$script(src = "shared/bootstrap.min.js"),
+      htmltools::tags$script(htmltools::HTML(paste0("var all_maps = ", js_maps_data, ";"))),
+      htmltools::tags$script(src = "shared/report_map.js")
+    )
+  )
+
+  report_path <- file.path(output_dir, output_file)
+  htmltools::save_html(html_content, file = report_path)
+
+  message(paste("\nReport generated successfully at:", report_path))
+  return(invisible(report_path))
+}
+
+
+# --- Helper Functions ---
+
+#' @describeIn rr_map_report Load all available versions of a given product.
+rr_load_all_map_versions <- function(project_dir, doc_type, prod_id) {
+  fp_dir <- file.path(project_dir, "fp", paste0("prod_", doc_type))
+  prod_path <- file.path(fp_dir, prod_id)
+  if (!dir.exists(prod_path)) return(list())
+
+  proc_dirs <- list.dirs(prod_path, recursive = FALSE, full.names = TRUE)
+  if (length(proc_dirs) == 0) return(list())
+
+  ver_list <- lapply(proc_dirs, function(pd) {
+    proc_id = fp_proc_dir_to_proc_id(pd)
+    ver_dirs <- fp_proc_dir_to_ver_dirs(pd)
+    if (length(ver_dirs)==0) return(NULL)
+    # TO DO: Handle multiple ver_dirs if necessary
+    ver_dir = ver_dirs[1]
+    df = tryCatch(fp_load_prod_df(ver_dir), error = function(e) NULL)
+    list(proc_id = proc_id, df = df)
+  })
+
+  ver_list <- ver_list[!sapply(ver_list, is.null)]
+  ver_list <- ver_list[!sapply(ver_list, function(x) is.null(x$df) || nrow(x$df) == 0)]
+
+  if(length(ver_list) == 0) return(list())
+
+  df_list <- lapply(ver_list, `[[`, "df")
+  names(df_list) <- sapply(ver_list, `[[`, "proc_id")
+  return(df_list)
+}
+
+#' @describeIn rr_map_report Generate JS object with maps for interactivity.
+rr_make_js_maps <- function(map_list, reg_color_map) {
+  all_maps <- lapply(names(map_list), function(version_name) {
+    map_df <- map_list[[version_name]]
+    if (is.null(map_df) || nrow(map_df) == 0) {
+      return(list(cell_to_code = list(), code_to_cells = list(), reg_info = list()))
+    }
+
+    # Forward map: cell_id -> code location
+    cell_map_df <- map_df %>%
+      dplyr::filter(!is.na(cell_ids) & cell_ids != "") %>%
+      dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
+      tidyr::unnest(cell_id) %>%
+      dplyr::mutate(cell_id = trimws(cell_id)) %>%
+      dplyr::select(cell_id, runid, script_num, code_line)
+
+    cell_to_code <- setNames(
+      lapply(1:nrow(cell_map_df), function(i) as.list(cell_map_df[i, c("runid", "script_num", "code_line")])),
+      cell_map_df$cell_id
+    )
+
+    # Backward map: code_line -> cell_ids
+    code_map_df <- map_df %>%
+      dplyr::filter(!is.na(code_line) & !is.na(script_num)) %>%
+      dplyr::select(script_num, code_line, tabid, cell_ids) %>%
+      dplyr::distinct()
+
+    code_to_cells <- setNames(
+      lapply(1:nrow(code_map_df), function(i) as.list(code_map_df[i, c("tabid", "cell_ids")])),
+      paste0("s", code_map_df$script_num, "_l", code_map_df$code_line)
+    )
+
+    # Regression Info for static coloring
+    reg_info <- list()
+    if ("reg_ind" %in% names(map_df) && length(reg_color_map) > 0) {
+      reg_df <- map_df %>%
+        dplyr::filter(!is.na(reg_ind) & !is.na(cell_ids) & cell_ids != "") %>%
+        dplyr::select(reg_ind, cell_ids) %>%
+        dplyr::group_by(reg_ind) %>%
+        dplyr::summarise(all_cell_ids = paste(unique(trimws(unlist(strsplit(cell_ids, ",")))), collapse = ","), .groups = "drop")
+
+      if (nrow(reg_df) > 0) {
+        reg_info <- setNames(
+          lapply(1:nrow(reg_df), function(i) {
+            list(
+              color = reg_color_map[[as.character(reg_df$reg_ind[i])]],
+              cell_ids = reg_df$all_cell_ids[i]
+            )
+          }),
+          reg_df$reg_ind
+        )
+      }
+    }
+
+    list(cell_to_code = cell_to_code, code_to_cells = code_to_cells, reg_info = reg_info)
+  })
+
+  jsonlite::toJSON(all_maps, auto_unbox = TRUE, null = "null", na = "null")
+}
+
+#' @describeIn rr_map_report Generate HTML for the Stata do-file panel.
+rr_make_do_panel_html <- function(stata_source, stata_cmd, stata_run_cmd, stata_run_log) {
+  restore.point("rr_make_do_panel_html")
+  # --- Data Preparation ---
+  run_df <- stata_run_cmd %>%
+    dplyr::left_join(stata_source %>% dplyr::select(artid, file_path, script_num), by=c("artid", "file_path")) %>%
+    dplyr::left_join(stata_run_log, by = c("artid", "runid", "script_num"))
+
+  ldf <- stata_source %>%
+    dplyr::mutate(text_lines = stringi::stri_split_lines(text)) %>%
+    dplyr::select(script_num, file_path, text_lines) %>%
+    tidyr::unnest(text_lines) %>%
+    dplyr::group_by(script_num) %>%
+    dplyr::mutate(orgline = dplyr::row_number()) %>%
+    dplyr::ungroup()
+
+  cmd_info <- stata_cmd %>%
+    dplyr::select(file_path, line, orgline_start, orgline_end, is_reg) %>%
+    dplyr::mutate(orgline = purrr::map2(orgline_start, orgline_end, seq)) %>%
+    tidyr::unnest(orgline)
+
+  ldf <- dplyr::left_join(ldf, cmd_info, by = c("file_path", "orgline"))
+
+  run_info <- run_df %>%
+    dplyr::group_by(file_path, line) %>%
+    dplyr::summarise(runs = list(dplyr::tibble(runid = runid, logtxt = logtxt, errcode = errcode, missing_data = missing_data)), .groups = "drop")
+
+  first_lines <- stata_cmd %>%
+    dplyr::select(file_path, line, orgline = orgline_start) %>%
+    dplyr::distinct() %>%
+    dplyr::left_join(run_info, by = c("file_path", "line"))
+
+  ldf <- dplyr::left_join(ldf, first_lines, by = c("file_path", "line", "orgline"))
+
+  # --- HTML Generation (Vectorized) ---
+  script_tabs_content <- lapply(split(ldf, ldf$script_num), function(df) {
+    script_num_val <- df$script_num[1]
+    has_run <- !sapply(df$runs, is.null)
+
+    line_class <- ifelse(has_run,
+      sapply(df$runs, function(r) {
+        if (is.null(r) || nrow(r) == 0) return("norun-line")
+        cls <- if (any(isTRUE(r$errcode != 0))) "err-line" else "noerr-line"
+        if (any(isTRUE(r$missing_data))) cls <- "mida-line"
+        cls
+      }),
+      "norun-line"
+    )
+    line_class[is.true(df$is_reg)] <- paste(line_class[is.true(df$is_reg)], "reg-cmd")
+
+    title <- ifelse(has_run,
+      sapply(df$runs, function(r) {
+        if (is.null(r) || nrow(r) == 0) return("NA")
+        t <- paste0("runid: ", paste(r$runid, collapse=", "))
+        if (any(r$missing_data)) t <- paste(t, " missing data")
+        t
+      }),
+      "NA"
+    )
+
+    log_divs <- ifelse(has_run, sapply(1:nrow(df), function(i) {
+        paste0('<div class="collapse" id="loginfo-', df$orgline[i], '-', script_num_val, '">', rr_make_log_html(df$runs[[i]]), '</div>')
+    }), "")
+
+    button_tds <- ifelse(has_run, paste0('<td><a class="btn btn-xs" role="button" data-toggle="collapse" href="#loginfo-', df$orgline, '-', script_num_val, '" aria-expanded="false">▼</a></td>'), "<td></td>")
+
+    code_tags <- paste0('<code id="L', df$orgline, '___', script_num_val, '" class="', line_class, '" title="', htmltools::htmlEscape(title), '">', htmltools::htmlEscape(df$text_lines), '</code>')
+
+    rows_html <- paste0(
+      '<tr>',
+        button_tds,
+        '<td class="code-line-td">', df$orgline, '</td>',
+        '<td><pre class="do-pre">', code_tags, log_divs, '</pre></td>',
+      '</tr>'
+    )
+
+    toggle_btn <- paste0('<tr><td colspan="3"><button class="toogle-all-results btn btn-xs" title="Show or hide all results" onclick="$(\'#dotab_', script_num_val, ' .collapse\').collapse(\'toggle\');">▼</button></td></tr>')
+
+    pane_class <- if(script_num_val==1) "tab-pane active" else "tab-pane"
+
+    paste0(
+      '<div class="', pane_class, '" id="dotab_', script_num_val, '">',
+        '<table class="code-tab">',
+          toggle_btn,
+          paste(rows_html, collapse="\n"),
+        '</table>',
+      '</div>'
+    )
+  })
+
+  script_pills <- paste0(
+    '<ul id="dotabs" class="nav nav-pills" role="tablist">',
+    paste(
+      mapply(function(num, file, i) {
+        active_class <- if(i == 1) ' class="active"' else ''
+        paste0('<li', active_class, '><a href="#dotab_', num, '" role="tab" data-toggle="tab">', file, '</a></li>')
+      }, stata_source$script_num, stata_source$script_file, 1:nrow(stata_source)),
+      collapse="\n"
+    ),
+    '</ul>'
+  )
+  paste0(script_pills, '<div class="tab-content">', paste(script_tabs_content, collapse="\n"), '</div>')
+}
+
+#' @describeIn rr_map_report Generate log HTML for a line, handling multiple runs.
+rr_make_log_html <- function(runs_for_line) {
+  if (is.null(runs_for_line) || nrow(runs_for_line) == 0) return("")
+
+  if (nrow(runs_for_line) == 1) {
+    run <- runs_for_line[1, ]
+    return(paste0('<pre id="runid-', run$runid, '" class="logtxt-pre"><code class="logtxt-code">', htmltools::htmlEscape(run$logtxt), '</code></pre>'))
+  }
+
+  random_id <- function() paste0(sample(c(letters, LETTERS), 12, replace = TRUE), collapse = "")
+
+  tabset_id <- paste0("tabset_", random_id())
+  tab_ids <- replicate(nrow(runs_for_line), paste0("tab_", random_id()))
+
+  tab_pills <- paste0(
+    '<ul id="', tabset_id, '" class="nav nav-tabs small-tab-ul" role="tablist">',
+    paste(
+      sapply(1:nrow(runs_for_line), function(i) {
+        active_class <- if (i == 1) ' class="active"' else ''
+        paste0('<li', active_class, '><a href="#', tab_ids[i], '" role="tab" data-toggle="tab">Run ', i, '</a></li>')
+      }),
+      collapse = "\n"
+    ),
+    '</ul>'
+  )
+
+  tab_content <- paste0(
+    '<div class="tab-content">',
+    paste(
+      sapply(1:nrow(runs_for_line), function(i) {
+        run <- runs_for_line[i, ]
+        pane_class <- if (i == 1) "tab-pane active" else "tab-pane"
+        paste0(
+          '<div class="', pane_class, '" id="', tab_ids[i], '">',
+            '<pre id="runid-', run$runid, '" class="logtxt-pre"><code class="logtxt-code">', htmltools::htmlEscape(run$logtxt), '</code></pre>',
+          '</div>'
+        )
+      }),
+      collapse="\n"
+    ),
+    '</div>'
+  )
+  paste0(tab_pills, tab_content)
+}
+
+
+#' @describeIn rr_map_report Generate HTML for the table display panel.
+rr_make_tab_panel_html <- function(tab_main) {
+  tab_pills <- paste0(
+    '<ul id="tabtabs" class="nav nav-pills" role="tablist">',
+    paste(
+      sapply(1:nrow(tab_main), function(i) {
+        row <- tab_main[i,]
+        active_class <- if(i == 1) ' class="active"' else ''
+        paste0('<li', active_class, '><a href="#tabtab', row$tabid, '" role="tab" data-toggle="tab">Tab ', row$tabid, '</a></li>')
+      }),
+      collapse = "\n"
+    ),
+    '</ul>'
+  )
+
+  tab_content <- paste0(
+    '<div class="tab-content">',
+    paste(
+      sapply(1:nrow(tab_main), function(i) {
+        row <- tab_main[i,]
+        active_class <- if(i == 1) "tab-pane active" else "tab-pane"
+        paste0(
+          '<div class="', active_class, '" id="tabtab', row$tabid, '">',
+            '<div class="art-tab-div">',
+              '<h5>', htmltools::htmlEscape(row$tabtitle), '</h5>',
+              row$tabhtml,
+            '</div>',
+          '</div>'
+        )
+      }),
+      collapse="\n"
+    ),
+    '</div>'
+  )
+  paste0(tab_pills, tab_content)
+}
+
+#' @describeIn rr_map_report Generate HTML for the map version selector.
+rr_make_version_selector_html <- function(versions) {
+  if (length(versions) <= 1) return("")
+
+  options <- paste0('<option value="', versions, '">', versions, '</option>', collapse = "\n")
+
+  paste0(
+    '<div class="version-selector-div">',
+      '<label for="version_selector">map Version: </label>',
+      '<select id="version_selector" class="form-control">',
+        options,
+      '</select>',
+    '</div>'
+  )
+}
+
+#' @describeIn rr_map_report Copy package assets to the report directory.
+rr_copy_pkg_assets <- function(output_dir) {
+  pkg_www_dir <- system.file("www", package = "repboxReport")
+  if (pkg_www_dir == "") {
+    warning("Could not find 'inst/www' directory in repboxReport package. Report assets will be missing.")
+    return()
+  }
+
+  shared_dir <- file.path(output_dir, "shared")
+  if (!dir.exists(shared_dir)) dir.create(shared_dir, recursive = TRUE)
+
+  files_to_copy <- list.files(pkg_www_dir, recursive = TRUE, full.names = TRUE)
+
+  if (length(files_to_copy) > 0) {
+    file.copy(files_to_copy, shared_dir, recursive = TRUE, overwrite = TRUE)
+  } else {
+     warning("No assets found in 'inst/www' to copy.")
+  }
+}
