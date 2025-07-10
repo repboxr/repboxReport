@@ -1,9 +1,10 @@
 project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
 schema_dir = "/home/rstudio/repbox/gemini/repboxAI/inst/prod_schemas"
 report_dir = "~/repbox/projects_gha_old2/aejapp_1_3_6/reports"
-repboxai_dir = "/home/rstudio/repbox/gemini/repboxAI"
+repboxHtml_dir = "/home/rstudio/repbox/repboxHtml"
 
 include_files = '''
+
 '''
 exclude_files = '''
 *.toml
@@ -11,45 +12,79 @@ exclude_files = '''
 
 template = '''
 
-We want R code that generates interactive HTML reports using JS and possibly dynamic
-data loading, that visualize mappings between regressions in tables of scientific articles
-and the corresponding regression commands in Stata do files of the reproduction package.
+Below are relevant files from my R project.
 
-The Stata scripts and infos on commands, as well as logs of the outputs are for a project
-in the following data files. Here shown for one example project:
+################################################
+# R project DESCRIPTION file (repboxReport)
+################################################
+
+{{DESCRIPTION}}
+
+################################################
+# R code files: (repboxReport)
+################################################
+
+{{R}}
+
+################################################
+# js and css files in inst/www (repboxReport)
+################################################
+
+{{inst_www}}
+
+################################################
+# Data sets
+################################################
+
+
+Here are examples of the parcels used
 
 {{repdb}}
 
-Mappings are extracted and stored as data frames where each row follow the following schemas:
+Here are the definitions of the relevant fp prods used
 
 {{schemas}}
 
-Note that for each table like map_reg_run there can be multiple data sets corresponding to different
-AI models. The generated HTML should allow to switch between versions in the visualzation.
+Note that for each product like map_reg_run there can be multiple data sets corresponding to different
+AI models.
+
+Here are example files from my older package repboxHtml that generated similar reports
+but used an older data structure. But design etc may be helpful.
+
+################################################
+# Files of older package repboxHtml
+################################################
 
 
-An example of a related report (based on older versions of the data structure) are here:
-
-{{reports}}
-
-
-Create an R script report_mapping.R which will be part of my package repboxAI. Here are
-its current R files:
-
-{{repboxai}}
+{{repboxHtml}}
 
 ##################################
 # Your Task
 ##################################
 
-Based on the info above create the script report_mapping.R that allows to generate interactive HTML reports using JS and possibly dynamic
-data loading, that visualize mappings between regressions in tables of scientific articles
-and the corresponding regression commands in Stata do files of the reproduction package.
+Improve and update repbox_mapping.R and possibly generate helper scripts
+R or js / css that will be stored in inst/www.
 
-Assume data sets using the table names described further above will be passed to the
-main function.
+Current goals:
+- All R functions should start with rr_ to identify them as function of this package,
+  only very general helper functions can deviate.
+
+- The tag$ approach to generate HTML does not seem very fast, better write HTML code
+  directly in a vectorized fashion (generally use stringi function for string manipulation)
+
+- Do color coding in the HTML tables. Cells that belong to a regression shall have
+  a unique color belonging to that reg_id. Cells whose numbers could not be matched,
+  should be indicated e.g. by a grey corner or something. Look at repboxHtml for inspiration.
+
+- The do code does not look nice, code lines have far too much spacing between each other.
+
+- The HTML tables from the articles don't have yet nice CSS
+
+- JS stuff that is constant should be written in a dedicated .js file that will be copied
+  in the repbox directory.
 
 '''
+
 
 
 file_template = '''
@@ -97,8 +132,49 @@ include_files = '''
 {{report_dir}}/repbox_links.js
 '''
 
-[[repboxai]]
+[[repboxHtml]]
 
 include_files = '''
-{{repboxai_dir}}/R/*.R
+{{repboxHtml_dir}}/R/*.R
+{{repboxHtml_dir}}/inst/www/*.*
+
 '''
+
+
+################################################
+# Special handling for R code
+################################################
+[[R]]
+include_files  = '''
+R/*.R
+R/*.r
+'''
+
+[[inst_www]]
+include_files  = '''
+inst/www/*.*
+'''
+
+[[README]]
+include_files = "README.md"
+group_template = '''
+################################################
+# Readme file
+################################################
+{{files}}
+'''
+file_template = '''
+```md
+{{filetext}}
+```
+'''
+
+[[DESCRIPTION]]
+include_files = "DESCRIPTION"
+file_template = '''
+```
+{{filetext}}
+```
+'''
+
+
