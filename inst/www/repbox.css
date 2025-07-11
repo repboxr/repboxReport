@@ -5,14 +5,33 @@ body {
 }
 
 /* Layout and Scroll */
-#do-col-div, #tabs-col-div {
+#do-col-div {
     display: flex;
     flex-direction: column;
     height: 100%;
-    padding: 5px;
+    /* Padding: top right bottom left. No padding on the right. */
+    padding: 5px 0px 5px 5px;
+    /* This column's right border will be the single divider */
     border: 1px solid #ddd;
-    border-radius: 4px;
+    /* Adjust border-radius for a seamless join on the right */
+    border-radius: 4px 0 0 4px;
 }
+
+#tabs-col-div {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    /* Padding: top right bottom left. No padding on the left. */
+    padding: 5px 5px 5px 0px;
+    /* No left border to avoid double lines with the other column */
+    border-top: 1px solid #ddd;
+    border-bottom: 1px solid #ddd;
+    border-right: 1px solid #ddd;
+    border-left: none;
+    /* Adjust border-radius for a seamless join on the left */
+    border-radius: 0 4px 4px 0;
+}
+
 
 /* Top Controls Bar */
 .controls-div {

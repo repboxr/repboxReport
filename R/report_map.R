@@ -428,7 +428,7 @@ rr_make_do_panel_html <- function(stata_source, stata_cmd, stata_run_cmd, stata_
       '<tr>',
         button_tds,
         '<td class="code-line-td">', df$orgline, '</td>',
-        '<td><pre class="do-pre">', code_tags, log_divs, '</pre></td>',
+        '<td><pre class="do-pre">', code_tags, '</pre>', log_divs, '</td>',
       '</tr>'
     )
 
