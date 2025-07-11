@@ -1,9 +1,9 @@
-
 example = function() {
   # The project_dir needs to be set to a valid repbox project
   project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
   # Generate report with default options
-  rr_map_report(project_dir)
+  rep_file = rr_map_report(project_dir)
+  browseURL(rep_file)
 
   # Example with custom options
   opts <- rr_map_report_opts()
@@ -17,14 +17,15 @@ example = function() {
 #'
 #' **Options:**
 #' * `output_for`: Determines for which commands the log output is shown.
-#'   - `"reg"`: (Default) Show output only for regression commands (`is_reg=TRUE`). This is recommended to keep the report size manageable.
+#'   - `"reg"`: Show output only for regression commands (`is_reg=TRUE`).
+#'   - `"reg_and_map"`: (Default) Show output for all regression commands and for all other commands that are part of a map.
 #'   - `"all"`: Show output for all executed commands.
 #'   - `"none"`: Do not show any log output.
 #' * `map_prod_ids`: A character vector of map product IDs to load and display in the report. The user can switch between these map types in the UI.
 #'
 #' @return A list of default options.
 #' @export
-rr_map_report_opts <- function(output_for = c("all", "reg","reg_and_map", "none")[3] , map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static")) {
+rr_map_report_opts <- function(output_for = c("all", "reg", "reg_and_map", "none")[3], map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static")) {
   as.list(environment())
 }
 
@@ -126,7 +127,8 @@ rr_map_report <- function(project_dir,
     stata_cmd = parcels$stata_cmd$stata_cmd,
     stata_run_cmd = parcels$stata_run_cmd$stata_run_cmd,
     stata_run_log = parcels$stata_run_log$stata_run_log,
-    opts = opts
+    opts = opts,
+    all_map_types = all_map_types
   )
 
   tab_panel_html <- rr_make_tab_panel_html(tab_main)
@@ -301,7 +303,7 @@ rr_make_js_maps_data <- function(all_map_types, reg_color_map, stata_source) {
 }
 
 #' @describeIn rr_map_report Generate HTML for the Stata do-file panel.
-rr_make_do_panel_html <- function(stata_source, stata_cmd, stata_run_cmd, stata_run_log, opts) {
+rr_make_do_panel_html <- function(stata_source, stata_cmd, stata_run_cmd, stata_run_log, opts, all_map_types = NULL) {
   restore.point("rr_make_do_panel_html")
   # --- Data Preparation ---
   run_df <- stata_run_cmd %>%
@@ -339,8 +341,52 @@ rr_make_do_panel_html <- function(stata_source, stata_cmd, stata_run_cmd, stata_
     if (opts$output_for == "none") {
       ldf$runs <- list(NULL)
     } else if (opts$output_for == "reg") {
-      # is_reg can be NA, is.true handles that
+      # is_reg can be NA, so is.true is correct
       ldf$runs[!is.true(ldf$is_reg)] <- list(NULL)
+    } else if (opts$output_for == "reg_and_map" && !is.null(all_map_types)) {
+      # Get all mapped lines from all_map_types
+      all_map_dfs <- unlist(all_map_types, recursive = FALSE)
+      all_map_dfs <- all_map_dfs[sapply(all_map_dfs, function(df) !is.null(df) && nrow(df) > 0)]
+
+      if (length(all_map_dfs) > 0) {
+        script_info <- stata_source %>%
+          dplyr::select(file_path, script_num) %>%
+          dplyr::distinct()
+
+        all_map_dfs_norm <- lapply(all_map_dfs, function(df) {
+          if (!"script_num" %in% names(df) && "script_file" %in% names(df)) {
+            df <- dplyr::left_join(df, script_info, by = c("script_file" = "file_path"))
+          }
+          return(df)
+        })
+
+        # The map's 'code_line' corresponds to the original line number ('orgline')
+        mapped_orglines_df <- dplyr::bind_rows(all_map_dfs_norm) %>%
+          dplyr::filter(!is.na(script_num), !is.na(code_line)) %>%
+          dplyr::select(script_num, orgline = code_line) %>%
+          dplyr::distinct()
+
+        # Create an indicator column for mapped lines. This join works because `ldf` has one row per `orgline`.
+        ldf <- ldf %>%
+          dplyr::left_join(
+            mapped_orglines_df %>% dplyr::mutate(is_mapped = TRUE),
+            by = c("script_num", "orgline")
+          )
+      } else {
+        ldf$is_mapped <- FALSE
+      }
+
+      # Keep runs for lines that are regressions OR are in a map.
+      # is_reg can be NA -> is.true handles this.
+      # is_mapped will be NA for non-matches -> is.true handles this.
+      # This works because both `runs` and `is_mapped` are attached only to the starting `orgline` of a command.
+      keep_runs <- is.true(ldf$is_reg) | is.true(ldf$is_mapped)
+      ldf$runs[!keep_runs] <- list(NULL)
+
+      # Clean up the temporary column
+      if ("is_mapped" %in% names(ldf)) {
+        ldf <- ldf %>% dplyr::select(-is_mapped)
+      }
     }
   }
 
