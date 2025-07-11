@@ -173,18 +173,34 @@ $(document).ready(function() {
         }
     });
 
-    // Click on a table cell
+// --- In file: report_map.js ---
+
+    // The selector is: $(document).on("click", ".tabnum, [id^=c][id*=_]", ...
     $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
         clear_all_highlights();
         const cell_id = event.currentTarget.id;
-        if (active_mapping && active_mapping.cell_to_code && active_mapping.cell_to_code[cell_id]) {
-            const mapping = active_mapping.cell_to_code[cell_id];
-            $(event.currentTarget).addClass("cell-highlight");
-            last_cell_highlights.push("#" + cell_id);
-            highlight_code(mapping.script_num, mapping.code_line);
+
+        // Check for the new properties in the active mapping
+        if (active_mapping && active_mapping.cell_to_code_idx && active_mapping.code_locations) {
+            // Find the index for our cell's code location
+            const location_idx = active_mapping.cell_to_code_idx[cell_id];
+
+            // Check that the index is valid (not undefined)
+            if (typeof location_idx !== 'undefined') {
+                // Retrieve the location data using the index
+                const location_data = active_mapping.code_locations[location_idx];
+                // location_data is an array: [runid, script_num, code_line]
+
+                $(event.currentTarget).addClass("cell-highlight");
+                last_cell_highlights.push("#" + cell_id);
+
+                // Access data by index
+                const script_num = location_data[1];
+                const code_line = location_data[2];
+                highlight_code(script_num, code_line);
+            }
         }
     });
-
     // Click on a regression command in a do-file
     $(document).on("click", ".reg-cmd", function(event) {
         clear_all_highlights();

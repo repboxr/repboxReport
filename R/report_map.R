@@ -270,14 +270,16 @@ rr_robust_script_num_join <- function(map_df, stata_source) {
   return(map_df)
 }
 
-  # Helper to process a single map data frame into a JS-ready list structure
+# Helper to process a single map data frame into a JS-ready list structure
 rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
     restore.point("rr_process_single_map_for_js")
     if (is.null(map_df) || nrow(map_df) == 0) {
-      return(list(cell_to_code = list(), code_to_cells = list(), reg_info = setNames(list(), character(0))))
+      # Return the new empty structure
+      return(list(code_locations = list(), cell_to_code_idx = list(),
+                  code_to_cells = list(), reg_info = setNames(list(), character(0))))
     }
 
-    # Robustly join to get script_num, matching by full path or basename
+    # Robustly join to get script_num
     map_df <- rr_robust_script_num_join(map_df, stata_source)
 
     ensure_cols <- c("runid", "script_num", "code_line", "cell_ids", "tabid", "reg_ind")
@@ -286,13 +288,35 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
         map_df[[col]] <- if (col %in% c("runid", "script_num", "code_line", "reg_ind")) NA_integer_ else NA_character_
       }
     }
+
+    # --- NEW LOGIC FOR COMPACT CELL->CODE MAPPING ---
     cell_map_df <- map_df %>%
       dplyr::filter(!is.na(.data$cell_ids), .data$cell_ids != "", !is.na(.data$script_num), !is.na(.data$code_line)) %>%
       dplyr::mutate(cell_id = strsplit(as.character(.data$cell_ids), ",")) %>%
       tidyr::unnest(.data$cell_id) %>%
       dplyr::mutate(cell_id = trimws(.data$cell_id)) %>%
       dplyr::select(.data$cell_id, .data$runid, .data$script_num, .data$code_line)
-    cell_to_code <- if (nrow(cell_map_df) > 0) setNames(lapply(1:nrow(cell_map_df), function(i) as.list(cell_map_df[i, c("runid", "script_num", "code_line")])), cell_map_df$cell_id) else list()
+
+    if (nrow(cell_map_df) > 0) {
+        # 1. Find unique code locations and assign a 0-based index
+        unique_locations <- cell_map_df %>%
+          dplyr::select(.data$runid, .data$script_num, .data$code_line) %>%
+          dplyr::distinct() %>%
+          dplyr::arrange(.data$runid, .data$script_num, .data$code_line) %>%
+          dplyr::mutate(location_idx = dplyr::row_number() - 1)
+
+        # 2. Create the list of location arrays for JSON
+        code_locations_list <- purrr::pmap(unique_locations[, c("runid", "script_num", "code_line")], c)
+
+        # 3. Join back to get the index for each cell and create the named list
+        cell_to_idx_df <- dplyr::left_join(cell_map_df, unique_locations, by = c("runid", "script_num", "code_line"))
+        cell_to_code_idx <- setNames(as.list(cell_to_idx_df$location_idx), cell_to_idx_df$cell_id)
+    } else {
+        code_locations_list <- list()
+        cell_to_code_idx <- list()
+    }
+    # --- END OF NEW LOGIC ---
+
     code_map_df <- map_df %>%
       dplyr::filter(!is.na(.data$code_line), !is.na(.data$script_num)) %>%
       dplyr::select(.data$script_num, .data$code_line, .data$tabid, .data$cell_ids) %>%
@@ -314,10 +338,15 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
         reg_info <- reg_info_list[!sapply(reg_info_list, is.null)]
       }
     }
-    list(cell_to_code = cell_to_code, code_to_cells = code_to_cells, reg_info = reg_info)
+
+    # Return the new structure
+    list(
+      code_locations = code_locations_list,
+      cell_to_code_idx = cell_to_code_idx,
+      code_to_cells = code_to_cells,
+      reg_info = reg_info
+    )
 }
-
-
 #' @describeIn rr_map_report Load all available versions of a given product.
 rr_load_all_map_versions <- function(project_dir, doc_type, prod_id) {
   fp_dir <- file.path(project_dir, "fp", paste0("prod_", doc_type))
