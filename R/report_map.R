@@ -13,6 +13,22 @@ example = function() {
   rstudioapi::filesPaneNavigate(project_dir)
 }
 
+#' This function provides a list of default settings that can be passed to `rr_map_report`.
+#'
+#' **Options:**
+#' * `output_for`: Determines for which commands the log output is shown.
+#'   - `"reg"`: (Default) Show output only for regression commands (`is_reg=TRUE`). This is recommended to keep the report size manageable.
+#'   - `"all"`: Show output for all executed commands.
+#'   - `"none"`: Do not show any log output.
+#' * `map_prod_ids`: A character vector of map product IDs to load and display in the report. The user can switch between these map types in the UI.
+#'
+#' @return A list of default options.
+#' @export
+rr_map_report_opts <- function(output_for = c("all", "reg","reg_and_map", "none")[3] , map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static")) {
+  as.list(environment())
+}
+
+
 #' Creates an interactive HTML report to visualize maps
 #'
 #' This function generates a self-contained HTML report that visualizes the
@@ -75,6 +91,13 @@ rr_map_report <- function(project_dir,
   }
   if (length(all_map_types) == 0) {
     warning("No map versions found for any prod_id in opts$map_prod_ids. The report will be generated without interactive links.")
+  }
+
+  # Standardize reg_ind across all map types
+  if (length(all_map_types) > 0) {
+      message("Standardizing regression indices...")
+      # source("R/standardize_reg_ind.R") # This line would be used to load the function
+      all_map_types <- rr_standardize_reg_ind(all_map_types)
   }
 
   # --- 3. Generate HTML & JS components ---
