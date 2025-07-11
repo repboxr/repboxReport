@@ -1,14 +1,19 @@
 example = function() {
   # The project_dir needs to be set to a valid repbox project
   project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
-  # Generate report with default options
-  rep_file = rr_map_report(project_dir)
+  # Generate report with default options (embedded data)
+  opts = rr_map_report_opts(embed_data = FALSE)
+  rep_file = rr_map_report(project_dir,opts = opts)
   browseURL(rep_file)
 
-  # Example with custom options
-  opts <- rr_map_report_opts()
+  # Example with external JSON files
+  # This report will need to be viewed via a web server.
+  opts <- rr_map_report_opts(embed_data = FALSE)
   opts$output_for <- "all"
-  rr_map_report(project_dir, opts = opts, output_file = "map_report_full_logs.html")
+  output_dir_ext = file.path(project_dir, "reports_external")
+  rr_map_report(project_dir, opts = opts, output_dir = output_dir_ext, output_file = "map_report_full_logs.html")
+  # To view, you would run this in the R console:
+  # servr::httd(output_dir_ext)
 
   rstudioapi::filesPaneNavigate(project_dir)
 }
@@ -22,10 +27,13 @@ example = function() {
 #'   - `"all"`: Show output for all executed commands.
 #'   - `"none"`: Do not show any log output.
 #' * `map_prod_ids`: A character vector of map product IDs to load and display in the report. The user can switch between these map types in the UI.
+#' * `embed_data`: A logical value. If `TRUE` (default), all map data is embedded into a single self-contained HTML file. If `FALSE`, map data is written to external JSON files, which makes the initial report load faster but requires a web server for viewing.
 #'
 #' @return A list of default options.
 #' @export
-rr_map_report_opts <- function(output_for = c("all", "reg", "reg_and_map", "none")[3], map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static")) {
+rr_map_report_opts <- function(output_for = c("all", "reg", "reg_and_map", "none")[3],
+                             map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static"),
+                             embed_data = TRUE) {
   as.list(environment())
 }
 
@@ -101,23 +109,101 @@ rr_map_report <- function(project_dir,
       all_map_types <- rr_standardize_reg_ind(all_map_types)
   }
 
+
   # --- 3. Generate HTML & JS components ---
   message("Generating HTML components...")
 
   # Generate color map for consistent colors across all loaded maps
-  all_map_types
   all_map_dfs <- unlist(all_map_types, recursive = FALSE)
-  all_map_dfs
   all_reg_inds <- unique(unlist(lapply(all_map_dfs, function(df) if("reg_ind" %in% names(df)) unique(df$reg_ind) else NULL)))
-
   all_reg_inds <- stats::na.omit(all_reg_inds)
-
   reg_color_map <- rr_make_distinct_colors(length(all_reg_inds))
-  reg_color_map
-
   names(reg_color_map) <- all_reg_inds
 
-  js_maps_data <- rr_make_js_maps_data(all_map_types, reg_color_map, parcels$stata_source$script_source)
+  # Helper to process a single map data frame into a JS-ready list structure
+  rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
+      if (is.null(map_df) || nrow(map_df) == 0) {
+        return(list(cell_to_code = list(), code_to_cells = list(), reg_info = setNames(list(), character(0))))
+      }
+      if (!"script_num" %in% names(map_df) && "script_file" %in% names(map_df)) {
+        script_info <- stata_source %>% dplyr::select(file_path, script_num) %>% dplyr::distinct(file_path, .keep_all = TRUE)
+        map_df <- map_df %>% dplyr::left_join(script_info, by = c("script_file" = "file_path"))
+      }
+      ensure_cols <- c("runid", "script_num", "code_line", "cell_ids", "tabid", "reg_ind")
+      for (col in ensure_cols) {
+        if (!col %in% names(map_df)) {
+          map_df[[col]] <- if (col %in% c("runid", "script_num", "code_line", "reg_ind")) NA_integer_ else NA_character_
+        }
+      }
+      cell_map_df <- map_df %>%
+        dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
+        dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
+        tidyr::unnest(cell_id) %>%
+        dplyr::mutate(cell_id = trimws(cell_id)) %>%
+        dplyr::select(cell_id, runid, script_num, code_line)
+      cell_to_code <- if (nrow(cell_map_df) > 0) setNames(lapply(1:nrow(cell_map_df), function(i) as.list(cell_map_df[i, c("runid", "script_num", "code_line")])), cell_map_df$cell_id) else list()
+      code_map_df <- map_df %>%
+        dplyr::filter(!is.na(code_line), !is.na(script_num)) %>%
+        dplyr::select(script_num, code_line, tabid, cell_ids) %>%
+        dplyr::distinct()
+      code_to_cells <- if (nrow(code_map_df) > 0) setNames(lapply(1:nrow(code_map_df), function(i) as.list(code_map_df[i, c("tabid", "cell_ids")])), paste0("s", code_map_df$script_num, "_l", code_map_df$code_line)) else list()
+      reg_info <- setNames(list(), character(0))
+      if ("reg_ind" %in% names(map_df) && length(reg_color_map) > 0) {
+        reg_df <- map_df %>%
+          dplyr::filter(!is.na(reg_ind), !is.na(cell_ids), cell_ids != "") %>%
+          dplyr::select(reg_ind, cell_ids) %>%
+          dplyr::group_by(reg_ind) %>%
+          dplyr::summarise(all_cell_ids = paste(unique(trimws(unlist(strsplit(cell_ids, ",")))), collapse = ","), .groups = "drop")
+        if (nrow(reg_df) > 0) {
+          reg_info_list <- lapply(1:nrow(reg_df), function(i) {
+              reg_index_char <- as.character(reg_df$reg_ind[i])
+              if (reg_index_char %in% names(reg_color_map)) list(color = reg_color_map[[reg_index_char]], cell_ids = reg_df$all_cell_ids[i]) else NULL
+            })
+          names(reg_info_list) <- reg_df$reg_ind
+          reg_info <- reg_info_list[!sapply(reg_info_list, is.null)]
+        }
+      }
+      list(cell_to_code = cell_to_code, code_to_cells = code_to_cells, reg_info = reg_info)
+  }
+
+  # Conditionally generate map data (embedded vs. external)
+  js_maps_data <- "{}"
+  js_manifest_data <- "{}"
+
+  if (isTRUE(opts$embed_data)) {
+    message("Generating and embedding map data...")
+    processed_types <- purrr::map(all_map_types, function(map_list_for_type) {
+        purrr::map(map_list_for_type, function(map_df) {
+            rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
+        })
+    })
+    js_maps_data <- jsonlite::toJSON(processed_types, auto_unbox = TRUE, null = "null", na = "null")
+  } else {
+    message("Generating external JSON files for map data...")
+    maps_data_dir <- file.path(output_dir, "maps_data")
+    if (!dir.exists(maps_data_dir)) dir.create(maps_data_dir, recursive = TRUE)
+
+    manifest <- list()
+    for (map_type in names(all_map_types)) {
+        manifest[[map_type]] <- list()
+        for (version_id in names(all_map_types[[map_type]])) {
+            map_df <- all_map_types[[map_type]][[version_id]]
+            processed_map_list <- rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
+            json_content <- jsonlite::toJSON(processed_map_list, auto_unbox = TRUE, null = "null", na = "null")
+
+            file_name <- paste0(map_type, "_", version_id, ".json")
+            file_path <- file.path(maps_data_dir, file_name)
+            relative_path <- file.path("maps_data", file_name)
+
+            writeLines(json_content, file_path)
+            manifest[[map_type]][[version_id]] <- relative_path
+        }
+    }
+    js_manifest_data <- jsonlite::toJSON(manifest, auto_unbox = TRUE)
+    message("\nExternal JSONs generated. Note: This report must now be viewed via a web server.")
+    message("You can start one from R with: servr::httd('", normalizePath(output_dir, mustWork=FALSE), "')")
+  }
+
 
   # Add a script_file column for easier access
   parcels$stata_source$script_source$script_file <- basename(parcels$stata_source$script_source$file_path)
@@ -164,7 +250,9 @@ rr_map_report <- function(project_dir,
       ),
       htmltools::tags$script(src = "shared/jquery.min.js"),
       htmltools::tags$script(src = "shared/bootstrap.min.js"),
+      htmltools::tags$script(htmltools::HTML(paste0("var data_is_embedded = ", tolower(isTRUE(opts$embed_data)), ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var all_maps = ", js_maps_data, ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var report_manifest = ", js_manifest_data, ";"))),
       htmltools::tags$script(src = "shared/report_map.js")
     )
   )
@@ -208,99 +296,8 @@ rr_load_all_map_versions <- function(project_dir, doc_type, prod_id) {
   return(df_list)
 }
 
-rr_make_js_maps_data <- function(all_map_types, reg_color_map, stata_source) {
-  restore.point("rr_make_js_maps_data")
-  # Use purrr::map to iterate over named lists while preserving names.
-  # This creates the nested object structure required by the JavaScript.
-  processed_types <- purrr::map(all_map_types, function(map_list_for_type) {
-    purrr::map(map_list_for_type, function(map_df) {
-
-      if (is.null(map_df) || nrow(map_df) == 0) {
-        # Ensure reg_info is an empty NAMED list to become {} not [] in JSON
-        return(list(cell_to_code = list(), code_to_cells = list(), reg_info = setNames(list(), character(0))))
-      }
-
-      # --- Standardize map_df columns ---
-      # Add script_num if missing (e.g., for map_reg_static)
-      if (!"script_num" %in% names(map_df) && "script_file" %in% names(map_df)) {
-        # Ensure we only have unique file_paths before joining
-        script_info <- stata_source %>% dplyr::select(file_path, script_num) %>% dplyr::distinct(file_path, .keep_all = TRUE)
-        map_df <- map_df %>%
-          dplyr::left_join(script_info, by = c("script_file" = "file_path"))
-      }
-
-      # Ensure other potentially required columns exist to prevent downstream errors.
-      ensure_cols <- c("runid", "script_num", "code_line", "cell_ids", "tabid", "reg_ind")
-      for (col in ensure_cols) {
-        if (!col %in% names(map_df)) {
-          map_df[[col]] <- if (col %in% c("runid", "script_num", "code_line", "reg_ind")) NA_integer_ else NA_character_
-        }
-      }
-
-      # --- Build Maps for JS ---
-      # Forward map: cell_id -> code location
-      cell_map_df <- map_df %>%
-        dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
-        dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
-        tidyr::unnest(cell_id) %>%
-        dplyr::mutate(cell_id = trimws(cell_id)) %>%
-        dplyr::select(cell_id, runid, script_num, code_line)
-
-      cell_to_code <- if (nrow(cell_map_df) > 0) {
-        setNames(
-          lapply(1:nrow(cell_map_df), function(i) as.list(cell_map_df[i, c("runid", "script_num", "code_line")])),
-          cell_map_df$cell_id
-        )
-      } else { list() }
-
-      # Backward map: code_line -> cell_ids
-      code_map_df <- map_df %>%
-        dplyr::filter(!is.na(code_line), !is.na(script_num)) %>%
-        dplyr::select(script_num, code_line, tabid, cell_ids) %>%
-        dplyr::distinct()
-
-      code_to_cells <- if (nrow(code_map_df) > 0) {
-        setNames(
-          lapply(1:nrow(code_map_df), function(i) as.list(code_map_df[i, c("tabid", "cell_ids")])),
-          paste0("s", code_map_df$script_num, "_l", code_map_df$code_line)
-        )
-      } else { list() }
-
-      # Regression Info for static coloring
-      reg_info <- setNames(list(), character(0)) # Initialize as an empty named list
-      restore.point("lsfhkdhf")
-      if ("reg_ind" %in% names(map_df) && length(reg_color_map) > 0) {
-        reg_df <- map_df %>%
-          dplyr::filter(!is.na(reg_ind), !is.na(cell_ids), cell_ids != "") %>%
-          dplyr::select(reg_ind, cell_ids) %>%
-          dplyr::group_by(reg_ind) %>%
-          dplyr::summarise(all_cell_ids = paste(unique(trimws(unlist(strsplit(cell_ids, ",")))), collapse = ","), .groups = "drop")
-
-        if (nrow(reg_df) > 0) {
-          reg_info_list <- lapply(1:nrow(reg_df), function(i) {
-              reg_index_char <- as.character(reg_df$reg_ind[i])
-              # Check if the reg_ind exists in the color map to avoid errors
-              if (reg_index_char %in% names(reg_color_map)) {
-                list(
-                  color = reg_color_map[[reg_index_char]],
-                  cell_ids = reg_df$all_cell_ids[i]
-                )
-              } else { NULL }
-            })
-
-          # Name the list elements by reg_ind
-          names(reg_info_list) <- reg_df$reg_ind
-
-          # Remove any NULLs that might have resulted from missing colors
-          reg_info <- reg_info_list[!sapply(reg_info_list, is.null)]
-        }
-      }
-
-      list(cell_to_code = cell_to_code, code_to_cells = code_to_cells, reg_info = reg_info)
-    })
-  })
-  jsonlite::toJSON(processed_types, auto_unbox = TRUE, null = "null", na = "null")
-}
+# NOTE: rr_make_js_maps_data is now obsolete and has been replaced by an
+# internal helper function and logic within rr_map_report.
 
 #' @describeIn rr_map_report Generate HTML for the Stata do-file panel.
 rr_make_do_panel_html <- function(stata_source, stata_cmd, stata_run_cmd, stata_run_log, opts, all_map_types = NULL) {

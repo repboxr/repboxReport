@@ -1,5 +1,10 @@
 // FILE: report_map.js
 
+// Global variables set by the R backend
+// var data_is_embedded = true;
+// var all_maps = { ... }; // Populated if data_is_embedded is true
+// var report_manifest = { ... }; // Populated if data_is_embedded is false
+
 var active_map_type = "";
 var active_version = "";
 var active_mapping = {};
@@ -92,7 +97,9 @@ function highlight_cells(tabid, cell_ids_string) {
 
 // Function to update the version selector based on the active map type
 function update_version_selector() {
-    const versions = Object.keys(all_maps[active_map_type] || {});
+    // The source of map keys depends on the data loading mode.
+    const source = data_is_embedded ? all_maps : report_manifest;
+    const versions = Object.keys(source[active_map_type] || {});
     const version_selector = $("#version_selector");
     version_selector.empty();
     versions.forEach(function(v) {
@@ -102,7 +109,7 @@ function update_version_selector() {
 
 
 $(document).ready(function() {
-    const map_types = Object.keys(all_maps);
+    const map_types = Object.keys(data_is_embedded ? all_maps : report_manifest);
     if (map_types.length === 0) {
         $(".controls-div").hide();
         return;
@@ -121,14 +128,49 @@ $(document).ready(function() {
     // Change map version
     $("#version_selector").on("change", function() {
         active_version = $(this).val();
-        if (active_map_type && active_version && all_maps[active_map_type] && all_maps[active_map_type][active_version]) {
-            active_mapping = all_maps[active_map_type][active_version];
-        } else {
-            // Reset if no valid mapping is found
-            active_mapping = {};
-        }
         clear_all_highlights();
-        apply_static_coloring(active_mapping);
+
+        if (data_is_embedded) {
+            // EMBEDDED MODE: Simply look up the data in the global object
+            if (active_map_type && active_version && all_maps[active_map_type] && all_maps[active_map_type][active_version]) {
+                active_mapping = all_maps[active_map_type][active_version];
+            } else {
+                active_mapping = {};
+            }
+            apply_static_coloring(active_mapping);
+        } else {
+            // EXTERNAL MODE: Fetch the data from the corresponding JSON file
+            const file_path = report_manifest[active_map_type]?.[active_version];
+            if (!file_path) {
+                active_mapping = {};
+                apply_static_coloring(active_mapping);
+                return;
+            }
+
+            const selectors = $("#map_type_selector, #version_selector");
+            selectors.prop("disabled", true); // Disable controls during fetch
+
+            fetch(file_path)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    active_mapping = data;
+                    apply_static_coloring(active_mapping);
+                })
+                .catch(error => {
+                    console.error("Failed to fetch map data:", error);
+                    alert("Failed to load map data. Please ensure you are viewing this report via a web server and the file exists: " + file_path);
+                    active_mapping = {};
+                    apply_static_coloring(active_mapping);
+                })
+                .finally(() => {
+                    selectors.prop("disabled", false); // Re-enable controls
+                });
+        }
     });
 
     // Click on a table cell
@@ -170,6 +212,6 @@ $(document).ready(function() {
 
     // Now, trigger the change event on the version selector.
     // Since the handler is already attached, this will correctly
-    // set the initial active_mapping and apply static colors.
+    // set the initial active_mapping and apply static colors (or fetch data).
     $("#version_selector").trigger("change");
 });
