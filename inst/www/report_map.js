@@ -4,7 +4,7 @@
 // var data_is_embedded = true;
 // var all_maps = { ... }; // Populated if data_is_embedded is true
 // var report_manifest = { ... }; // Populated if data_is_embedded is false
-// var cell_info_map = { ... }; // Populated with aggregated cell info
+// var cell_conflict_data = { ... }; // Populated with pre-computed conflict info
 
 var active_map_type = "";
 var active_version = "";
@@ -175,30 +175,76 @@ function update_version_selector() {
     });
 }
 
-function applyCellTitles() {
-    // cell_info_map is loaded from the HTML script tag
-    if (typeof cell_info_map === 'undefined' || Object.keys(cell_info_map).length === 0) return;
+function update_all_cell_titles() {
+    const cell_map = active_mapping ? active_mapping.cell_map : null;
 
-    // Iterate over all potential table cells
     $("[id^=c][id*=_]").each(function() {
         const cell_id = this.id;
-        const info = cell_info_map[cell_id];
         let title_parts = [`cell_id: ${cell_id}`];
 
-        if (info) {
-            if (info.reg_inds && info.reg_inds.length > 0) {
-                // reg_inds are already sorted and unique from R
-                title_parts.push(`reg_ind(s): ${info.reg_inds.join(', ')}`);
-                if (info.reg_inds.length > 1) {
-                    title_parts.push('(Note: Mapped to multiple regressions across different map versions)');
-                }
-            }
-            if (info.is_wrong) {
-                title_parts.push('(Note: Marked as having a wrong number in at least one map version)');
+        // 1. Add info from the currently active map version
+        if (cell_map && cell_map[cell_id]) {
+            const info = cell_map[cell_id];
+            if (info.reg_ind !== null) title_parts.push(`reg_ind: ${info.reg_ind}`);
+            if (info.runid !== null) title_parts.push(`runid: ${info.runid}`);
+            if (info.script_num !== null && info.code_line !== null) {
+                title_parts.push(`script: ${info.script_num}, line: ${info.code_line}`);
             }
         }
+
+        // 2. Add static conflict info if it exists
+        if (typeof cell_conflict_data !== 'undefined' && cell_conflict_data[cell_id]) {
+            title_parts.push(cell_conflict_data[cell_id]);
+        }
+
         $(this).attr('title', title_parts.join('\n'));
     });
+}
+
+function handle_map_change() {
+    clear_all_highlights();
+
+    const apply_updates = (map_data) => {
+        active_mapping = map_data || {};
+        apply_static_coloring(active_mapping);
+        apply_wrong_number_info(active_mapping);
+        update_all_cell_titles();
+    };
+
+    if (data_is_embedded) {
+        // EMBEDDED MODE: Simply look up the data in the global object
+        const map_data = all_maps[active_map_type] ? all_maps[active_map_type][active_version] : null;
+        apply_updates(map_data);
+    } else {
+        // EXTERNAL MODE: Fetch the data from the corresponding JSON file
+        const file_path = report_manifest[active_map_type]?.[active_version];
+        if (!file_path) {
+            apply_updates(null);
+            return;
+        }
+
+        const selectors = $("#map_type_selector, #version_selector");
+        selectors.prop("disabled", true); // Disable controls during fetch
+
+        fetch(file_path)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                apply_updates(data);
+            })
+            .catch(error => {
+                console.error("Failed to fetch map data:", error);
+                alert("Failed to load map data. Please ensure you are viewing this report via a web server and the file exists: " + file_path);
+                apply_updates(null);
+            })
+            .finally(() => {
+                selectors.prop("disabled", false); // Re-enable controls
+            });
+    }
 }
 
 
@@ -215,60 +261,13 @@ $(document).ready(function() {
     $("#map_type_selector").on("change", function() {
         active_map_type = $(this).val();
         update_version_selector();
-        // Trigger the version change to update the mapping and view
-        $("#version_selector").trigger("change");
+        $("#version_selector").trigger("change"); // Trigger version change to update view
     });
 
     // Change map version
     $("#version_selector").on("change", function() {
         active_version = $(this).val();
-        clear_all_highlights();
-
-        if (data_is_embedded) {
-            // EMBEDDED MODE: Simply look up the data in the global object
-            if (active_map_type && active_version && all_maps[active_map_type] && all_maps[active_map_type][active_version]) {
-                active_mapping = all_maps[active_map_type][active_version];
-            } else {
-                active_mapping = {};
-            }
-            apply_static_coloring(active_mapping);
-            apply_wrong_number_info(active_mapping);
-        } else {
-            // EXTERNAL MODE: Fetch the data from the corresponding JSON file
-            const file_path = report_manifest[active_map_type]?.[active_version];
-            if (!file_path) {
-                active_mapping = {};
-                apply_static_coloring(active_mapping);
-                apply_wrong_number_info(active_mapping);
-                return;
-            }
-
-            const selectors = $("#map_type_selector, #version_selector");
-            selectors.prop("disabled", true); // Disable controls during fetch
-
-            fetch(file_path)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    active_mapping = data;
-                    apply_static_coloring(active_mapping);
-                    apply_wrong_number_info(active_mapping);
-                })
-                .catch(error => {
-                    console.error("Failed to fetch map data:", error);
-                    alert("Failed to load map data. Please ensure you are viewing this report via a web server and the file exists: " + file_path);
-                    active_mapping = {};
-                    apply_static_coloring(active_mapping);
-                    apply_wrong_number_info(active_mapping);
-                })
-                .finally(() => {
-                    selectors.prop("disabled", false); // Re-enable controls
-                });
-        }
+        handle_map_change();
     });
 
     // Click on a table cell
@@ -276,21 +275,12 @@ $(document).ready(function() {
         clear_all_highlights();
         const cell_id = event.currentTarget.id;
 
-        // Check for the new properties in the active mapping
         if (active_mapping && active_mapping.cell_to_code_idx && active_mapping.code_locations) {
-            // Find the index for our cell's code location
             const location_idx = active_mapping.cell_to_code_idx[cell_id];
-
-            // Check that the index is valid (not undefined)
             if (typeof location_idx !== 'undefined') {
-                // Retrieve the location data using the index
                 const location_data = active_mapping.code_locations[location_idx];
-                // location_data is an array: [runid, script_num, code_line]
-
                 $(event.currentTarget).addClass("cell-highlight");
                 last_cell_highlights.push("#" + cell_id);
-
-                // Access data by index
                 const script_num = location_data[1];
                 const code_line = location_data[2];
                 highlight_code(script_num, code_line);
@@ -318,10 +308,8 @@ $(document).ready(function() {
     // Click on an item in the discrepancy report
     $(document).on("click", ".wrong-number-report-item", function() {
         clear_all_highlights();
-
         const cell_id = $(this).data("cell-id");
         if (!cell_id) return;
-
         const cell_element = $("#" + cell_id);
         if (cell_element.length > 0) {
             const tab_pane = cell_element.closest('.tab-pane[id^=tabtab]');
@@ -329,8 +317,6 @@ $(document).ready(function() {
                 const tab_id = tab_pane.attr('id');
                 $('#tabtabs a[href="#' + tab_id + '"]').tab('show');
             }
-
-            // Defer scroll and highlight to ensure tab is visible
             setTimeout(function() {
                 cell_element[0].scrollIntoView({ behavior: "smooth", block: "center" });
                 cell_element.addClass("wrong-number-report-highlight");
@@ -339,18 +325,7 @@ $(document).ready(function() {
     });
 
     // --- 2. RUN INITIALIZATION LOGIC ---
-
-    // Apply titles to table cells (this is static for the report)
-    applyCellTitles();
-
-    // Set the initial map type from the first option in the selector
     active_map_type = $("#map_type_selector").val();
-
-    // Populate the version selector based on the initial map type
     update_version_selector();
-
-    // Now, trigger the change event on the version selector.
-    // Since the handler is already attached, this will correctly
-    // set the initial active_mapping and apply static colors (or fetch data).
     $("#version_selector").trigger("change");
 });

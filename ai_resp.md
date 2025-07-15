@@ -1,20 +1,20 @@
-I will update your R project to implement the requested features. The changes will enhance the report by adding informative tooltips to table cells, making the discrepancy report interactive, and improving the visual styling for cells with incorrect numbers.
+Of course. I will update the report generation logic to meet your new requirements for the cell tooltips. The tooltips will now be dynamic, reflecting the currently active map version, and a more intelligent conflict-detection mechanism will be implemented in R to avoid unnecessary warnings.
 
-Here is a summary of the plan:
-1.  **Modify `rr_map_report` in `R/report_map.R`**: This function will be updated to pre-process data for cell tooltips. It will aggregate information about which regression indices and "wrong number" flags are associated with each table cell across all map versions. This data will be passed to the report's JavaScript.
-2.  **Rewrite `inst/www/repbox.css`**: The stylesheet will be updated to remove the old styling for "wrong number" cells and add new styles for the interactive features, including a highlight for cells selected from the discrepancy report and hover effects for the report items.
-3.  **Rewrite `inst/www/report_map.js`**: The main JavaScript file will be updated to implement the new features:
-    *   It will add detailed tooltips to each table cell on startup.
-    *   The styling for cells with discrepancies will be changed to a 45-degree gradient, as requested.
-    *   The discrepancy report will be made interactive, allowing users to click on an item to highlight and navigate to the corresponding cell in the table.
+Here is the plan:
 
-These changes will make the generated reports more user-friendly and informative.
+1.  **Update `rr_map_report` (`R/report_map.R`):** I will modify this function to pre-compute a "conflict map" in R. This map will identify cells that are linked to different script files or code lines across various map versions and generate a detailed warning message for their tooltips. This data will be passed to the JavaScript environment of the report.
 
-!MODIFICATION rr_map_report in report_map.R
+2.  **Update `rr_process_single_map_for_js` (`R/report_map.R`):** This helper function will be enhanced to create a `cell_map` for each individual map version. This map will contain all the necessary details (`runid`, `reg_ind`, `script_num`, `code_line`) for each cell, allowing the JavaScript to dynamically build the tooltips for the currently selected map.
+
+3.  **Rewrite `report_map.js` (`inst/www/report_map.js`):** The JavaScript will be completely rewritten to handle the new data structures. It will now update all cell tooltips whenever the user selects a different map version, combining the dynamic information from the active map with the static conflict warnings pre-computed by R.
+
+Here are the detailed modifications:
+
+!MODIFICATION rr_map_report in R/report_map.R
 scope = "function"
 file = "R/report_map.R"
 function_name = "rr_map_report"
-description = '''Update `rr_map_report` to generate and embed a `cell_info_map`. This map contains aggregated information for each table cell (reg_inds, wrong_number_flags) from all map versions, which is used by JavaScript to create informative tooltips.'''
+description = '''Updates `rr_map_report` to generate and embed `cell_conflict_data`. This is a pre-computed map that contains warning messages for cells mapped inconsistently (different script/line) across different map versions. This avoids client-side computation.'''
 ---
 ```r
 #' Creates an interactive HTML report to visualize maps
@@ -93,51 +93,57 @@ rr_map_report <- function(project_dir,
   # --- 3. Generate HTML & JS components ---
   message("Generating HTML components...")
 
-  # Generate a map of information for each cell_id to be used for tooltips.
-  # This is done across all loaded map versions to be comprehensive.
-  cell_info_map <- {
-    all_map_dfs_for_titles <- unlist(all_map_types, recursive = FALSE)
+  # Pre-compute conflict information for tooltips.
+  # A conflict exists if a cell_id maps to different script/line combinations
+  # across different map versions.
+  cell_conflict_data <- {
+    all_maps_flat <- unlist(all_map_types, recursive = FALSE)
+    if (length(all_maps_flat) > 1) { # Conflicts only possible with more than 1 map version
+        all_maps_flat_df <- purrr::map_dfr(all_maps_flat, ~.x, .id = "map_version_id")
 
-    # 1. Gather all cell_id -> reg_ind mappings
-    reg_mappings <- dplyr::bind_rows(
-        purrr::keep(all_map_dfs_for_titles, ~!is.null(.) && all(c("cell_ids", "reg_ind") %in% names(.)))
-      ) %>%
-      dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(reg_ind)) %>%
-      dplyr::select(reg_ind, cell_ids) %>%
-      dplyr::mutate(cell_id_list = strsplit(as.character(cell_ids), ",")) %>%
-      tidyr::unnest(cell_id_list) %>%
-      dplyr::mutate(cell_id = trimws(cell_id_list)) %>%
-      dplyr::filter(cell_id != "") %>%
-      dplyr::select(cell_id, reg_ind) %>%
-      dplyr::distinct() %>%
-      dplyr::group_by(cell_id) %>%
-      dplyr::summarise(reg_inds = list(sort(unique(reg_ind))), .groups = "drop")
+        conflict_df <- all_maps_flat_df %>%
+          rr_robust_script_num_join(parcels$stata_source$script_source) %>%
+          dplyr::filter(!is.na(.data$cell_ids), .data$cell_ids != "", !is.na(.data$script_num), !is.na(.data$code_line)) %>%
+          dplyr::select(.data$map_version_id, .data$script_num, .data$code_line, .data$cell_ids) %>%
+          dplyr::mutate(cell_id = strsplit(as.character(.data$cell_ids), ",")) %>%
+          tidyr::unnest(.data$cell_id) %>%
+          dplyr::mutate(cell_id = trimws(.data$cell_id)) %>%
+          dplyr::filter(.data$cell_id != "") %>%
+          dplyr::select(.data$map_version_id, .data$cell_id, .data$script_num, .data$code_line) %>%
+          dplyr::distinct()
 
-    # 2. Gather all cell_ids with wrong numbers
-    wrong_number_cells <- dplyr::bind_rows(
-        purrr::keep(all_map_dfs_for_titles, ~!is.null(.) && "wrong_number_cases" %in% names(.))
-      ) %>%
-      dplyr::select(wrong_number_cases) %>%
-      dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0)) %>%
-      tidyr::unnest(cols = wrong_number_cases) %>%
-      dplyr::select(cell_id) %>%
-      dplyr::distinct() %>%
-      dplyr::mutate(is_wrong = TRUE)
+        conflict_summary <- conflict_df %>%
+          dplyr::group_by(.data$cell_id) %>%
+          dplyr::mutate(target_key = paste(.data$script_num, .data$code_line, sep = ":")) %>%
+          dplyr::summarise(
+            num_unique_targets = dplyr::n_distinct(.data$target_key),
+            conflict_info = if (dplyr::n_distinct(.data$target_key) > 1) {
+              list(dplyr::tibble(map_version_id = .data$map_version_id, script_num = .data$script_num, code_line = .data$code_line))
+            } else {
+              list(NULL)
+            }
+          ) %>%
+          dplyr::filter(.data$num_unique_targets > 1)
 
-    # 3. Join them together
-    cell_info_df <- dplyr::full_join(reg_mappings, wrong_number_cells, by = "cell_id") %>%
-      dplyr::mutate(is_wrong = ifelse(is.na(is_wrong), FALSE, is_wrong))
-
-    # 4. Convert to the nested list format for JSON
-    if (nrow(cell_info_df) > 0) {
-      cell_info_df$reg_inds[sapply(cell_info_df$reg_inds, is.null)] <- list(integer(0))
-      purrr::transpose(cell_info_df[, -1]) %>%
-        setNames(cell_info_df$cell_id)
+        if (nrow(conflict_summary) > 0) {
+          setNames(
+            lapply(conflict_summary$conflict_info, function(info_df) {
+              details <- info_df %>%
+                dplyr::distinct(.data$map_version_id, .data$script_num, .data$code_line) %>%
+                dplyr::mutate(msg = paste0(.data$map_version_id, " -> S", .data$script_num, " L", .data$code_line)) %>%
+                dplyr::pull(.data$msg)
+              paste0("Note: Mapped differently in other versions:\n - ", paste(details, collapse="\n - "))
+            }),
+            conflict_summary$cell_id
+          )
+        } else {
+          list()
+        }
     } else {
       list()
     }
   }
-  js_cell_info_data <- jsonlite::toJSON(cell_info_map, auto_unbox = TRUE)
+  js_conflict_data <- jsonlite::toJSON(cell_conflict_data, auto_unbox = TRUE)
 
 
   # Generate color map for consistent colors across all loaded maps
@@ -236,7 +242,7 @@ rr_map_report <- function(project_dir,
       htmltools::tags$script(htmltools::HTML(paste0("var data_is_embedded = ", tolower(isTRUE(opts$embed_data)), ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var all_maps = ", js_maps_data, ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var report_manifest = ", js_manifest_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var cell_info_map = ", js_cell_info_data, ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var cell_conflict_data = ", js_conflict_data, ";"))),
       htmltools::tags$script(src = "shared/report_map.js")
     )
   )
@@ -248,221 +254,149 @@ rr_map_report <- function(project_dir,
   return(invisible(report_path))
 }
 ```
-!END_MODIFICATION rr_map_report in report_map.R
+!END_MODIFICATION rr_map_report in R/report_map.R
 
-!MODIFICATION repbox.css
-scope = "file"
-file = "inst/www/repbox.css"
-is_new_file = false
-description = '''Update `repbox.css` to change styling for 'wrong number' cells and add styles for the interactive discrepancy report.'''
+!MODIFICATION rr_process_single_map_for_js in report_map.R
+scope = "function"
+file = "R/report_map.R"
+function_name = "rr_process_single_map_for_js"
+description = '''Updates `rr_process_single_map_for_js` to generate a `cell_map` object. This new structure provides a direct mapping from a `cell_id` to its specific metadata (`runid`, `script_num`, `code_line`, `reg_ind`) for that map version, enabling dynamic tooltips in JavaScript.'''
 ---
-```css
-/* FILE: repbox.css */
-body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    font-size: 14px;
-}
+```r
+# Helper to process a single map data frame into a JS-ready list structure
+rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
+    restore.point("rr_process_single_map_for_js")
+    if (is.null(map_df) || nrow(map_df) == 0) {
+      # Return the new empty structure
+      return(list(code_locations = list(), cell_to_code_idx = list(),
+                  code_to_cells = list(), reg_info = setNames(list(), character(0)),
+                  wrong_number_info = list(), cell_map = list()))
+    }
 
-/* Layout and Scroll */
-#do-col-div {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    /* Padding: top right bottom left. No padding on the right. */
-    padding: 5px 0px 5px 5px;
-    /* This column's right border will be the single divider */
-    border: 1px solid #ddd;
-    /* Adjust border-radius for a seamless join on the right */
-    border-radius: 4px 0 0 4px;
-}
+    # Robustly join to get script_num
+    map_df <- rr_robust_script_num_join(map_df, stata_source)
 
-#tabs-col-div {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    /* Padding: top right bottom left. No padding on the left. */
-    padding: 5px 5px 5px 0px;
-    /* No left border to avoid double lines with the other column */
-    border-top: 1px solid #ddd;
-    border-bottom: 1px solid #ddd;
-    border-right: 1px solid #ddd;
-    border-left: none;
-    /* Adjust border-radius for a seamless join on the left */
-    border-radius: 0 4px 4px 0;
-}
+    ensure_cols <- c("runid", "script_num", "code_line", "cell_ids", "tabid", "reg_ind")
+    for (col in ensure_cols) {
+      if (!col %in% names(map_df)) {
+        map_df[[col]] <- if (col %in% c("runid", "script_num", "code_line", "reg_ind")) NA_integer_ else NA_character_
+      }
+    }
 
+    # --- NEW LOGIC FOR COMPACT CELL->CODE MAPPING (for highlighting) ---
+    cell_map_df_highlight <- map_df %>%
+      dplyr::filter(!is.na(.data$cell_ids), .data$cell_ids != "", !is.na(.data$script_num), !is.na(.data$code_line)) %>%
+      dplyr::mutate(cell_id = strsplit(as.character(.data$cell_ids), ",")) %>%
+      tidyr::unnest(.data$cell_id) %>%
+      dplyr::mutate(cell_id = trimws(.data$cell_id)) %>%
+      dplyr::select(.data$cell_id, .data$runid, .data$script_num, .data$code_line)
 
-/* Top Controls Bar */
-.controls-div {
-    padding: 5px 10px;
-    background-color: #f5f5f5;
-    border-bottom: 1px solid #ddd;
-    margin-bottom: 5px;
-}
-.controls-div .form-group {
-    margin-right: 20px;
-}
-.controls-div label {
-    margin-right: 5px;
-    font-weight: normal;
-}
-.controls-div .form-control {
-    height: auto;
-    padding: 2px 6px;
-}
+    if (nrow(cell_map_df_highlight) > 0) {
+        # 1. Find unique code locations and assign a 0-based index
+        unique_locations <- cell_map_df_highlight %>%
+          dplyr::select(.data$runid, .data$script_num, .data$code_line) %>%
+          dplyr::distinct() %>%
+          dplyr::arrange(.data$runid, .data$script_num, .data$code_line) %>%
+          dplyr::mutate(location_idx = dplyr::row_number() - 1)
 
-/* Do File Panel */
-.code-tab {
-    width: 100%;
-    border-collapse: collapse;
-}
-.code-tab td {
-    padding: 0 4px;
-    vertical-align: top;
-    line-height: 1.2;
-}
-.code-line-td {
-    padding-right: 10px;
-    text-align: right;
-    color: #888;
-    font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
-    user-select: none;
-}
-.do-pre {
-    margin: 0;
-    padding: 1px 0;
-    border: none;
-    background-color: transparent;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    font-family: 'Menlo', 'Monaco', 'Consolas', monospace;
-    font-size: 13px;
-}
-.logtxt-pre {
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    font-size: 0.9em;
-    border: 1px solid #eee;
-    padding: 5px;
-    background-color: #fdfdfd;
-}
+        # 2. Create the list of location arrays for JSON
+        code_locations_list <- purrr::pmap(unique_locations[, c("runid", "script_num", "code_line")], c)
 
-/* Line Styles */
-.noerr-line { color: #006400; }
-.err-line { color: #aa0000; background-color: #fbecec; }
-.mida-line { color: #b06900; background-color: #fff3e0; }
-.norun-line { color: #555; }
-.reg-cmd { font-weight: bold; cursor: pointer; }
-.reg-cmd:hover { text-decoration: underline; }
+        # 3. Join back to get the index for each cell and create the named list
+        cell_to_idx_df <- dplyr::left_join(cell_map_df_highlight, unique_locations, by = c("runid", "script_num", "code_line"))
+        cell_to_code_idx <- setNames(as.list(cell_to_idx_df$location_idx), cell_to_idx_df$cell_id)
+    } else {
+        code_locations_list <- list()
+        cell_to_code_idx <- list()
+    }
+    # --- END OF COMPACT LOGIC ---
 
-/* Table Panel */
-.art-tab-div table {
-    font-size: 12px;
-    font-family: "Trebuchet MS","Arial Narrow","Tahoma", sans-serif;
-    width: auto;
-    white-space: nowrap;
-    border-collapse: collapse;
-    margin-top: 5px;
-}
-.art-tab-div table td, .art-tab-div table th {
-    padding: 2px 4px;
-    border: 1px solid #ddd;
-    text-align: center;
-}
-.art-tab-div table th {
-    background-color: #f5f5f5;
-}
-.tabnum, [id^=c][id*=_] {
-    cursor: pointer;
-}
+    # --- NEW logic for cell_map for tooltips ---
+    cell_map_df_tooltip <- map_df %>%
+      dplyr::filter(!is.na(.data$cell_ids), .data$cell_ids != "", !is.na(.data$script_num)) %>%
+      dplyr::select(.data$runid, .data$script_num, .data$code_line, .data$reg_ind, .data$cell_ids) %>%
+      dplyr::mutate(cell_id = strsplit(as.character(.data$cell_ids), ",")) %>%
+      tidyr::unnest(.data$cell_id) %>%
+      dplyr::mutate(cell_id = trimws(.data$cell_id)) %>%
+      dplyr::filter(.data$cell_id != "") %>%
+      dplyr::group_by(.data$cell_id) %>%
+      dplyr::summarise(
+        runid = dplyr::first(.data$runid),
+        script_num = dplyr::first(.data$script_num),
+        code_line = dplyr::first(.data$code_line),
+        reg_ind = dplyr::first(.data$reg_ind)
+      )
 
-/* Highlighting */
-.code-highlight {
-    background-color: #ffd700 !important;
-    border-radius: 3px;
-}
-.cell-highlight {
-    background-color: #ffd700 !important;
-    outline: 2px solid #e0b800 !important;
-}
-.statically-colored {
-    /* Use a CSS variable for the background color. Set with JS. */
-    /* !important ensures this style overrides any other conflicting rules (e.g., from bootstrap) */
-    background-color: var(--static-bg-color) !important;
-    transition: background-color 0.3s ease;
-}
+    cell_map <- if (nrow(cell_map_df_tooltip) > 0) {
+      purrr::transpose(cell_map_df_tooltip[, -1]) %>%
+        setNames(cell_map_df_tooltip$cell_id)
+    } else {
+      list()
+    }
 
 
-/* Tab Styles */
-.nav-pills>li>a {
-    padding: 4px 8px;
-}
-.small-tab-ul {
-    font-size: 0.8em;
-}
-.small-tab-ul>li>a {
-    padding: 3px 6px;
-}
-.tab-content {
-    border: 1px solid #ddd;
-    padding: 5px;
-    border-top: none;
-    border-radius: 0 0 4px 4px;
-}
-#dotabs + .tab-content,
-#tabtabs + .tab-content {
-    flex: 1;
-    min-height: 0; /* Prevents flexbox overflow issues */
-    overflow-y: auto;
-}
+    code_map_df <- map_df %>%
+      dplyr::filter(!is.na(.data$code_line), !is.na(.data$script_num)) %>%
+      dplyr::select(.data$script_num, .data$code_line, .data$tabid, .data$cell_ids) %>%
+      dplyr::distinct()
+    code_to_cells <- if (nrow(code_map_df) > 0) setNames(lapply(1:nrow(code_map_df), function(i) as.list(code_map_df[i, c("tabid", "cell_ids")])), paste0("s", code_map_df$script_num, "_l", code_map_df$code_line)) else list()
+    reg_info <- setNames(list(), character(0))
+    if ("reg_ind" %in% names(map_df) && length(reg_color_map) > 0) {
+      reg_df <- map_df %>%
+        dplyr::filter(!is.na(.data$reg_ind), !is.na(.data$cell_ids), .data$cell_ids != "") %>%
+        dplyr::select(.data$reg_ind, .data$cell_ids) %>%
+        dplyr::group_by(.data$reg_ind) %>%
+        dplyr::summarise(all_cell_ids = paste(unique(trimws(unlist(strsplit(.data$cell_ids, ",")))), collapse = ","), .groups = "drop")
+      if (nrow(reg_df) > 0) {
+        reg_info_list <- lapply(1:nrow(reg_df), function(i) {
+            reg_index_char <- as.character(reg_df$reg_ind[i])
+            if (reg_index_char %in% names(reg_color_map)) list(color = reg_color_map[[reg_index_char]], cell_ids = reg_df$all_cell_ids[i]) else NULL
+          })
+        names(reg_info_list) <- reg_df$reg_ind
+        reg_info <- reg_info_list[!sapply(reg_info_list, is.null)]
+      }
+    }
 
-/* Discrepancy Highlighting */
-.wrong-number-cell {
-    /* This class is now just a marker. Styling is applied via JS using a gradient. */
-}
+    # --- Process wrong number cases ---
+    wrong_number_info <- list()
+    if ("wrong_number_cases" %in% names(map_df) && "tabid" %in% names(map_df)) {
+        # The list column from JSON can contain NULLs for empty arrays. Filter these out.
+        wnc_df <- map_df %>%
+            dplyr::select(.data$tabid, .data$wrong_number_cases) %>%
+            dplyr::filter(!sapply(.data$wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
 
-/* For interactive report click */
-.wrong-number-report-highlight {
-    outline: 2px solid red !important;
-    outline-offset: -2px;
-}
+        if (nrow(wnc_df) > 0) {
+            wrong_number_info <- wnc_df %>%
+                tidyr::unnest(cols = .data$wrong_number_cases) %>%
+                dplyr::select(
+                    .data$tabid,
+                    .data$cell_id,
+                    .data$wrong_number_in_cell,
+                    .data$number_in_stata_output
+                ) %>%
+                dplyr::distinct()
+        }
+    }
 
-.wrong-number-report {
-    margin-top: 15px;
-    padding: 10px;
-    border: 1px solid #f0c0c0;
-    background-color: #fef5f5;
-    border-radius: 4px;
-    font-size: 13px;
-    white-space: normal;
-    text-align: left;
-}
-.wrong-number-report h6 {
-    margin-top: 0;
-    font-weight: bold;
-    color: #a94442;
-}
-.wrong-number-report ul {
-    padding-left: 20px;
-    margin-bottom: 0;
-}
-.wrong-number-report-item {
-    cursor: pointer;
-    list-style-type: disc;
-    margin-bottom: 2px;
-}
-.wrong-number-report-item:hover {
-    text-decoration: underline;
-    color: #337ab7;
+
+    # Return the new structure
+    list(
+      code_locations = code_locations_list,
+      cell_to_code_idx = cell_to_code_idx,
+      code_to_cells = code_to_cells,
+      reg_info = reg_info,
+      wrong_number_info = wrong_number_info,
+      cell_map = cell_map
+    )
 }
 ```
-!END_MODIFICATION repbox.css
+!END_MODIFICATION rr_process_single_map_for_js in report_map.R
 
 !MODIFICATION report_map.js
 scope = "file"
 file = "inst/www/report_map.js"
 is_new_file = false
-description = '''Rewrite `report_map.js` to add cell tooltips, interactive discrepancy reports, and improved styling for wrong-number cells.'''
+description = '''Rewrites `report_map.js` to implement dynamic cell tooltips. The script now updates all tooltips on map version change, using a combination of dynamic data from the active map (`cell_map`) and static, pre-computed conflict information (`cell_conflict_data`).'''
 ---
 ```javascript
 // FILE: report_map.js
@@ -471,7 +405,7 @@ description = '''Rewrite `report_map.js` to add cell tooltips, interactive discr
 // var data_is_embedded = true;
 // var all_maps = { ... }; // Populated if data_is_embedded is true
 // var report_manifest = { ... }; // Populated if data_is_embedded is false
-// var cell_info_map = { ... }; // Populated with aggregated cell info
+// var cell_conflict_data = { ... }; // Populated with pre-computed conflict info
 
 var active_map_type = "";
 var active_version = "";
@@ -642,30 +576,76 @@ function update_version_selector() {
     });
 }
 
-function applyCellTitles() {
-    // cell_info_map is loaded from the HTML script tag
-    if (typeof cell_info_map === 'undefined' || Object.keys(cell_info_map).length === 0) return;
+function update_all_cell_titles() {
+    const cell_map = active_mapping ? active_mapping.cell_map : null;
 
-    // Iterate over all potential table cells
     $("[id^=c][id*=_]").each(function() {
         const cell_id = this.id;
-        const info = cell_info_map[cell_id];
         let title_parts = [`cell_id: ${cell_id}`];
 
-        if (info) {
-            if (info.reg_inds && info.reg_inds.length > 0) {
-                // reg_inds are already sorted and unique from R
-                title_parts.push(`reg_ind(s): ${info.reg_inds.join(', ')}`);
-                if (info.reg_inds.length > 1) {
-                    title_parts.push('(Note: Mapped to multiple regressions across different map versions)');
-                }
-            }
-            if (info.is_wrong) {
-                title_parts.push('(Note: Marked as having a wrong number in at least one map version)');
+        // 1. Add info from the currently active map version
+        if (cell_map && cell_map[cell_id]) {
+            const info = cell_map[cell_id];
+            if (info.reg_ind !== null) title_parts.push(`reg_ind: ${info.reg_ind}`);
+            if (info.runid !== null) title_parts.push(`runid: ${info.runid}`);
+            if (info.script_num !== null && info.code_line !== null) {
+                title_parts.push(`script: ${info.script_num}, line: ${info.code_line}`);
             }
         }
+
+        // 2. Add static conflict info if it exists
+        if (typeof cell_conflict_data !== 'undefined' && cell_conflict_data[cell_id]) {
+            title_parts.push(cell_conflict_data[cell_id]);
+        }
+
         $(this).attr('title', title_parts.join('\n'));
     });
+}
+
+function handle_map_change() {
+    clear_all_highlights();
+
+    const apply_updates = (map_data) => {
+        active_mapping = map_data || {};
+        apply_static_coloring(active_mapping);
+        apply_wrong_number_info(active_mapping);
+        update_all_cell_titles();
+    };
+
+    if (data_is_embedded) {
+        // EMBEDDED MODE: Simply look up the data in the global object
+        const map_data = all_maps[active_map_type] ? all_maps[active_map_type][active_version] : null;
+        apply_updates(map_data);
+    } else {
+        // EXTERNAL MODE: Fetch the data from the corresponding JSON file
+        const file_path = report_manifest[active_map_type]?.[active_version];
+        if (!file_path) {
+            apply_updates(null);
+            return;
+        }
+
+        const selectors = $("#map_type_selector, #version_selector");
+        selectors.prop("disabled", true); // Disable controls during fetch
+
+        fetch(file_path)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                apply_updates(data);
+            })
+            .catch(error => {
+                console.error("Failed to fetch map data:", error);
+                alert("Failed to load map data. Please ensure you are viewing this report via a web server and the file exists: " + file_path);
+                apply_updates(null);
+            })
+            .finally(() => {
+                selectors.prop("disabled", false); // Re-enable controls
+            });
+    }
 }
 
 
@@ -682,60 +662,13 @@ $(document).ready(function() {
     $("#map_type_selector").on("change", function() {
         active_map_type = $(this).val();
         update_version_selector();
-        // Trigger the version change to update the mapping and view
-        $("#version_selector").trigger("change");
+        $("#version_selector").trigger("change"); // Trigger version change to update view
     });
 
     // Change map version
     $("#version_selector").on("change", function() {
         active_version = $(this).val();
-        clear_all_highlights();
-
-        if (data_is_embedded) {
-            // EMBEDDED MODE: Simply look up the data in the global object
-            if (active_map_type && active_version && all_maps[active_map_type] && all_maps[active_map_type][active_version]) {
-                active_mapping = all_maps[active_map_type][active_version];
-            } else {
-                active_mapping = {};
-            }
-            apply_static_coloring(active_mapping);
-            apply_wrong_number_info(active_mapping);
-        } else {
-            // EXTERNAL MODE: Fetch the data from the corresponding JSON file
-            const file_path = report_manifest[active_map_type]?.[active_version];
-            if (!file_path) {
-                active_mapping = {};
-                apply_static_coloring(active_mapping);
-                apply_wrong_number_info(active_mapping);
-                return;
-            }
-
-            const selectors = $("#map_type_selector, #version_selector");
-            selectors.prop("disabled", true); // Disable controls during fetch
-
-            fetch(file_path)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    active_mapping = data;
-                    apply_static_coloring(active_mapping);
-                    apply_wrong_number_info(active_mapping);
-                })
-                .catch(error => {
-                    console.error("Failed to fetch map data:", error);
-                    alert("Failed to load map data. Please ensure you are viewing this report via a web server and the file exists: " + file_path);
-                    active_mapping = {};
-                    apply_static_coloring(active_mapping);
-                    apply_wrong_number_info(active_mapping);
-                })
-                .finally(() => {
-                    selectors.prop("disabled", false); // Re-enable controls
-                });
-        }
+        handle_map_change();
     });
 
     // Click on a table cell
@@ -743,21 +676,12 @@ $(document).ready(function() {
         clear_all_highlights();
         const cell_id = event.currentTarget.id;
 
-        // Check for the new properties in the active mapping
         if (active_mapping && active_mapping.cell_to_code_idx && active_mapping.code_locations) {
-            // Find the index for our cell's code location
             const location_idx = active_mapping.cell_to_code_idx[cell_id];
-
-            // Check that the index is valid (not undefined)
             if (typeof location_idx !== 'undefined') {
-                // Retrieve the location data using the index
                 const location_data = active_mapping.code_locations[location_idx];
-                // location_data is an array: [runid, script_num, code_line]
-
                 $(event.currentTarget).addClass("cell-highlight");
                 last_cell_highlights.push("#" + cell_id);
-
-                // Access data by index
                 const script_num = location_data[1];
                 const code_line = location_data[2];
                 highlight_code(script_num, code_line);
@@ -785,10 +709,8 @@ $(document).ready(function() {
     // Click on an item in the discrepancy report
     $(document).on("click", ".wrong-number-report-item", function() {
         clear_all_highlights();
-
         const cell_id = $(this).data("cell-id");
         if (!cell_id) return;
-
         const cell_element = $("#" + cell_id);
         if (cell_element.length > 0) {
             const tab_pane = cell_element.closest('.tab-pane[id^=tabtab]');
@@ -796,8 +718,6 @@ $(document).ready(function() {
                 const tab_id = tab_pane.attr('id');
                 $('#tabtabs a[href="#' + tab_id + '"]').tab('show');
             }
-
-            // Defer scroll and highlight to ensure tab is visible
             setTimeout(function() {
                 cell_element[0].scrollIntoView({ behavior: "smooth", block: "center" });
                 cell_element.addClass("wrong-number-report-highlight");
@@ -806,19 +726,8 @@ $(document).ready(function() {
     });
 
     // --- 2. RUN INITIALIZATION LOGIC ---
-
-    // Apply titles to table cells (this is static for the report)
-    applyCellTitles();
-
-    // Set the initial map type from the first option in the selector
     active_map_type = $("#map_type_selector").val();
-
-    // Populate the version selector based on the initial map type
     update_version_selector();
-
-    // Now, trigger the change event on the version selector.
-    // Since the handler is already attached, this will correctly
-    // set the initial active_mapping and apply static colors (or fetch data).
     $("#version_selector").trigger("change");
 });
 ```
