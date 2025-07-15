@@ -4,6 +4,7 @@
 // var data_is_embedded = true;
 // var all_maps = { ... }; // Populated if data_is_embedded is true
 // var report_manifest = { ... }; // Populated if data_is_embedded is false
+// var cell_info_map = { ... }; // Populated with aggregated cell info
 
 var active_map_type = "";
 var active_version = "";
@@ -21,6 +22,8 @@ function clear_all_highlights() {
         $(id).removeClass("cell-highlight");
     });
     last_cell_highlights = [];
+    // Also clear highlights from discrepancy report clicks
+    $(".wrong-number-report-highlight").removeClass("wrong-number-report-highlight");
 }
 
 function clear_static_coloring() {
@@ -62,10 +65,26 @@ function apply_static_coloring(mapping) {
 function apply_wrong_number_info(mapping) {
     // Clear previous reports and styling
     $(".wrong-number-report").remove();
-    $(".wrong-number-cell").removeClass("wrong-number-cell");
+    $(".wrong-number-cell").each(function() {
+        this.style.removeProperty('background-image');
+        $(this).removeClass("wrong-number-cell");
+    });
 
-    if (!mapping || !mapping.wrong_number_info || mapping.wrong_number_info.length === 0) {
+    if (!mapping || !mapping.wrong_number_info || !Array.isArray(mapping.wrong_number_info) || mapping.wrong_number_info.length === 0) {
         return;
+    }
+
+    // Build a map from cell ID to its regression color for this specific map version
+    const cell_to_color = {};
+    if (mapping.reg_info) {
+        for (const reg_ind in mapping.reg_info) {
+            const info = mapping.reg_info[reg_ind];
+            if (info.color && info.cell_ids) {
+                info.cell_ids.split(',').forEach(id => {
+                    cell_to_color[id.trim()] = info.color;
+                });
+            }
+        }
     }
 
     const wrong_cases_by_tab = {};
@@ -77,7 +96,14 @@ function apply_wrong_number_info(mapping) {
         wrong_cases_by_tab[tabid].push(case_item);
 
         // Apply styling to the cell
-        $("#" + case_item.cell_id).addClass("wrong-number-cell");
+        const cell_element = $("#" + case_item.cell_id);
+        if (cell_element.length > 0) {
+            cell_element.addClass("wrong-number-cell");
+            const reg_color = cell_to_color[case_item.cell_id] || '#f0f0f0'; // Default color if not found
+            const gradient = `linear-gradient(45deg, #cccccc, ${reg_color})`;
+            // This will be rendered on top of the background-color set by static coloring
+            cell_element[0].style.setProperty('background-image', gradient, 'important');
+        }
     });
 
     // Generate and append reports for each table that has wrong numbers
@@ -85,9 +111,9 @@ function apply_wrong_number_info(mapping) {
         if (wrong_cases_by_tab.hasOwnProperty(tabid)) {
             const cases_for_tab = wrong_cases_by_tab[tabid];
             let report_html = '<div class="wrong-number-report">';
-            report_html += '<h6>Discrepancies Found:</h6><ul>';
+            report_html += '<h6>Discrepancies Found (click to locate):</h6><ul>';
             cases_for_tab.forEach(case_item => {
-                report_html += `<li>Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
+                report_html += `<li class="wrong-number-report-item" data-cell-id="${case_item.cell_id}">Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
             });
             report_html += '</ul></div>';
 
@@ -146,6 +172,32 @@ function update_version_selector() {
     version_selector.empty();
     versions.forEach(function(v) {
         version_selector.append($("<option></option>").attr("value", v).text(v));
+    });
+}
+
+function applyCellTitles() {
+    // cell_info_map is loaded from the HTML script tag
+    if (typeof cell_info_map === 'undefined' || Object.keys(cell_info_map).length === 0) return;
+
+    // Iterate over all potential table cells
+    $("[id^=c][id*=_]").each(function() {
+        const cell_id = this.id;
+        const info = cell_info_map[cell_id];
+        let title_parts = [`cell_id: ${cell_id}`];
+
+        if (info) {
+            if (info.reg_inds && info.reg_inds.length > 0) {
+                // reg_inds are already sorted and unique from R
+                title_parts.push(`reg_ind(s): ${info.reg_inds.join(', ')}`);
+                if (info.reg_inds.length > 1) {
+                    title_parts.push('(Note: Mapped to multiple regressions across different map versions)');
+                }
+            }
+            if (info.is_wrong) {
+                title_parts.push('(Note: Marked as having a wrong number in at least one map version)');
+            }
+        }
+        $(this).attr('title', title_parts.join('\n'));
     });
 }
 
@@ -219,9 +271,7 @@ $(document).ready(function() {
         }
     });
 
-// --- In file: report_map.js ---
-
-    // The selector is: $(document).on("click", ".tabnum, [id^=c][id*=_]", ...
+    // Click on a table cell
     $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
         clear_all_highlights();
         const cell_id = event.currentTarget.id;
@@ -247,6 +297,7 @@ $(document).ready(function() {
             }
         }
     });
+
     // Click on a regression command in a do-file
     $(document).on("click", ".reg-cmd", function(event) {
         clear_all_highlights();
@@ -264,7 +315,33 @@ $(document).ready(function() {
         }
     });
 
+    // Click on an item in the discrepancy report
+    $(document).on("click", ".wrong-number-report-item", function() {
+        clear_all_highlights();
+
+        const cell_id = $(this).data("cell-id");
+        if (!cell_id) return;
+
+        const cell_element = $("#" + cell_id);
+        if (cell_element.length > 0) {
+            const tab_pane = cell_element.closest('.tab-pane[id^=tabtab]');
+            if (tab_pane.length > 0) {
+                const tab_id = tab_pane.attr('id');
+                $('#tabtabs a[href="#' + tab_id + '"]').tab('show');
+            }
+
+            // Defer scroll and highlight to ensure tab is visible
+            setTimeout(function() {
+                cell_element[0].scrollIntoView({ behavior: "smooth", block: "center" });
+                cell_element.addClass("wrong-number-report-highlight");
+            }, 200);
+        }
+    });
+
     // --- 2. RUN INITIALIZATION LOGIC ---
+
+    // Apply titles to table cells (this is static for the report)
+    applyCellTitles();
 
     // Set the initial map type from the first option in the selector
     active_map_type = $("#map_type_selector").val();

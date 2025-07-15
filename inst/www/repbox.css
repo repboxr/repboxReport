@@ -159,8 +159,13 @@ body {
 
 /* Discrepancy Highlighting */
 .wrong-number-cell {
-    background-color: #cccccc !important;
-    outline: 1px solid #999999 !important;
+    /* This class is now just a marker. Styling is applied via JS using a gradient. */
+}
+
+/* For interactive report click */
+.wrong-number-report-highlight {
+    outline: 2px solid red !important;
+    outline-offset: -2px;
 }
 
 .wrong-number-report {
@@ -181,4 +186,13 @@ body {
 .wrong-number-report ul {
     padding-left: 20px;
     margin-bottom: 0;
+}
+.wrong-number-report-item {
+    cursor: pointer;
+    list-style-type: disc;
+    margin-bottom: 2px;
+}
+.wrong-number-report-item:hover {
+    text-decoration: underline;
+    color: #337ab7;
 }

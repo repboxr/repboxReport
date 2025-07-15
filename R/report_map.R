@@ -116,6 +116,53 @@ rr_map_report <- function(project_dir,
   # --- 3. Generate HTML & JS components ---
   message("Generating HTML components...")
 
+  # Generate a map of information for each cell_id to be used for tooltips.
+  # This is done across all loaded map versions to be comprehensive.
+  cell_info_map <- {
+    all_map_dfs_for_titles <- unlist(all_map_types, recursive = FALSE)
+
+    # 1. Gather all cell_id -> reg_ind mappings
+    reg_mappings <- dplyr::bind_rows(
+        purrr::keep(all_map_dfs_for_titles, ~!is.null(.) && all(c("cell_ids", "reg_ind") %in% names(.)))
+      ) %>%
+      dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(reg_ind)) %>%
+      dplyr::select(reg_ind, cell_ids) %>%
+      dplyr::mutate(cell_id_list = strsplit(as.character(cell_ids), ",")) %>%
+      tidyr::unnest(cell_id_list) %>%
+      dplyr::mutate(cell_id = trimws(cell_id_list)) %>%
+      dplyr::filter(cell_id != "") %>%
+      dplyr::select(cell_id, reg_ind) %>%
+      dplyr::distinct() %>%
+      dplyr::group_by(cell_id) %>%
+      dplyr::summarise(reg_inds = list(sort(unique(reg_ind))), .groups = "drop")
+
+    # 2. Gather all cell_ids with wrong numbers
+    wrong_number_cells <- dplyr::bind_rows(
+        purrr::keep(all_map_dfs_for_titles, ~!is.null(.) && "wrong_number_cases" %in% names(.))
+      ) %>%
+      dplyr::select(wrong_number_cases) %>%
+      dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0)) %>%
+      tidyr::unnest(cols = wrong_number_cases) %>%
+      dplyr::select(cell_id) %>%
+      dplyr::distinct() %>%
+      dplyr::mutate(is_wrong = TRUE)
+
+    # 3. Join them together
+    cell_info_df <- dplyr::full_join(reg_mappings, wrong_number_cells, by = "cell_id") %>%
+      dplyr::mutate(is_wrong = ifelse(is.na(is_wrong), FALSE, is_wrong))
+
+    # 4. Convert to the nested list format for JSON
+    if (nrow(cell_info_df) > 0) {
+      cell_info_df$reg_inds[sapply(cell_info_df$reg_inds, is.null)] <- list(integer(0))
+      purrr::transpose(cell_info_df[, -1]) %>%
+        setNames(cell_info_df$cell_id)
+    } else {
+      list()
+    }
+  }
+  js_cell_info_data <- jsonlite::toJSON(cell_info_map, auto_unbox = TRUE)
+
+
   # Generate color map for consistent colors across all loaded maps
   all_map_dfs <- unlist(all_map_types, recursive = FALSE)
   all_reg_inds <- unique(unlist(lapply(all_map_dfs, function(df) if("reg_ind" %in% names(df)) unique(df$reg_ind) else NULL)))
@@ -212,6 +259,7 @@ rr_map_report <- function(project_dir,
       htmltools::tags$script(htmltools::HTML(paste0("var data_is_embedded = ", tolower(isTRUE(opts$embed_data)), ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var all_maps = ", js_maps_data, ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var report_manifest = ", js_manifest_data, ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var cell_info_map = ", js_cell_info_data, ";"))),
       htmltools::tags$script(src = "shared/report_map.js")
     )
   )
