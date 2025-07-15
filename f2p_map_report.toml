@@ -1,3 +1,5 @@
+opt_prompt_file = "my_prompt.Rmd"
+
 project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
 schema_dir = "/home/rstudio/repbox/gemini/repboxAI/inst/prod_schemas"
 report_dir = "~/repbox/projects_gha_new/aejapp_10_4_6/reports"
@@ -50,6 +52,22 @@ AI models.
 
 Here are example files from my older package repboxHtml that generated similar reports
 but used an older data structure. But design etc may be helpful.
+
+{{mod_instruct}}
+
+##################################
+# Coding Style
+##################################
+
+##################################
+# Coding Style
+##################################
+
+When you write R code:
+
+- Prefer stringi functions for string operations (exception paste0 is fine)
+- Prefer = as assignment operator over <-
+- DO NOT use `.data$col` syntax within dplyr verbs e.g. not `filter(.data$x>0)` just write `filter(x>0)` instead.
 
 ##################################
 # Your Task

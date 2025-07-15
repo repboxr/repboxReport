@@ -156,3 +156,29 @@ body {
     min-height: 0; /* Prevents flexbox overflow issues */
     overflow-y: auto;
 }
+
+/* Discrepancy Highlighting */
+.wrong-number-cell {
+    background-color: #cccccc !important;
+    outline: 1px solid #999999 !important;
+}
+
+.wrong-number-report {
+    margin-top: 15px;
+    padding: 10px;
+    border: 1px solid #f0c0c0;
+    background-color: #fef5f5;
+    border-radius: 4px;
+    font-size: 13px;
+    white-space: normal;
+    text-align: left;
+}
+.wrong-number-report h6 {
+    margin-top: 0;
+    font-weight: bold;
+    color: #a94442;
+}
+.wrong-number-report ul {
+    padding-left: 20px;
+    margin-bottom: 0;
+}

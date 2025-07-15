@@ -59,6 +59,48 @@ function apply_static_coloring(mapping) {
     }
 }
 
+function apply_wrong_number_info(mapping) {
+    // Clear previous reports and styling
+    $(".wrong-number-report").remove();
+    $(".wrong-number-cell").removeClass("wrong-number-cell");
+
+    if (!mapping || !mapping.wrong_number_info || mapping.wrong_number_info.length === 0) {
+        return;
+    }
+
+    const wrong_cases_by_tab = {};
+    mapping.wrong_number_info.forEach(case_item => {
+        const tabid = String(case_item.tabid); // Ensure tabid is a string
+        if (!wrong_cases_by_tab[tabid]) {
+            wrong_cases_by_tab[tabid] = [];
+        }
+        wrong_cases_by_tab[tabid].push(case_item);
+
+        // Apply styling to the cell
+        $("#" + case_item.cell_id).addClass("wrong-number-cell");
+    });
+
+    // Generate and append reports for each table that has wrong numbers
+    for (const tabid in wrong_cases_by_tab) {
+        if (wrong_cases_by_tab.hasOwnProperty(tabid)) {
+            const cases_for_tab = wrong_cases_by_tab[tabid];
+            let report_html = '<div class="wrong-number-report">';
+            report_html += '<h6>Discrepancies Found:</h6><ul>';
+            cases_for_tab.forEach(case_item => {
+                report_html += `<li>Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
+            });
+            report_html += '</ul></div>';
+
+            // Find the correct table div to append to
+            const table_container = $("#tabtab" + tabid + " .art-tab-div");
+            if (table_container.length > 0) {
+                table_container.append(report_html);
+            }
+        }
+    }
+}
+
+
 function highlight_code(script_num, line_num) {
     $("#dotabs a[href='#dotab_" + script_num + "']").tab("show");
 
@@ -138,12 +180,14 @@ $(document).ready(function() {
                 active_mapping = {};
             }
             apply_static_coloring(active_mapping);
+            apply_wrong_number_info(active_mapping);
         } else {
             // EXTERNAL MODE: Fetch the data from the corresponding JSON file
             const file_path = report_manifest[active_map_type]?.[active_version];
             if (!file_path) {
                 active_mapping = {};
                 apply_static_coloring(active_mapping);
+                apply_wrong_number_info(active_mapping);
                 return;
             }
 
@@ -160,12 +204,14 @@ $(document).ready(function() {
                 .then(data => {
                     active_mapping = data;
                     apply_static_coloring(active_mapping);
+                    apply_wrong_number_info(active_mapping);
                 })
                 .catch(error => {
                     console.error("Failed to fetch map data:", error);
                     alert("Failed to load map data. Please ensure you are viewing this report via a web server and the file exists: " + file_path);
                     active_mapping = {};
                     apply_static_coloring(active_mapping);
+                    apply_wrong_number_info(active_mapping);
                 })
                 .finally(() => {
                     selectors.prop("disabled", false); // Re-enable controls

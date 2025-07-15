@@ -94,6 +94,7 @@ rr_map_report <- function(project_dir,
 
   message("Loading maps...")
   all_map_types <- list()
+  prod_id = "map_reg_run"
   for (prod_id in opts$map_prod_ids) {
     map_list <- rr_load_all_map_versions(project_dir, doc_type, prod_id = prod_id)
     if (length(map_list) > 0) {
@@ -269,14 +270,14 @@ rr_robust_script_num_join <- function(map_df, stata_source) {
 
   return(map_df)
 }
-
 # Helper to process a single map data frame into a JS-ready list structure
 rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
     restore.point("rr_process_single_map_for_js")
     if (is.null(map_df) || nrow(map_df) == 0) {
       # Return the new empty structure
       return(list(code_locations = list(), cell_to_code_idx = list(),
-                  code_to_cells = list(), reg_info = setNames(list(), character(0))))
+                  code_to_cells = list(), reg_info = setNames(list(), character(0)),
+                  wrong_number_info = list()))
     }
 
     # Robustly join to get script_num
@@ -339,41 +340,60 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
       }
     }
 
+    # --- Process wrong number cases ---
+    wrong_number_info <- list()
+    if ("wrong_number_cases" %in% names(map_df) && "tabid" %in% names(map_df)) {
+        # The list column from JSON can contain NULLs for empty arrays. Filter these out.
+        wnc_df <- map_df %>%
+            dplyr::select(.data$tabid, .data$wrong_number_cases) %>%
+            dplyr::filter(!sapply(.data$wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
+
+        if (nrow(wnc_df) > 0) {
+            wrong_number_info <- wnc_df %>%
+                tidyr::unnest(cols = .data$wrong_number_cases) %>%
+                dplyr::select(
+                    .data$tabid,
+                    .data$cell_id,
+                    .data$wrong_number_in_cell,
+                    .data$number_in_stata_output
+                ) %>%
+                dplyr::distinct()
+        }
+    }
+
+
     # Return the new structure
     list(
       code_locations = code_locations_list,
       cell_to_code_idx = cell_to_code_idx,
       code_to_cells = code_to_cells,
-      reg_info = reg_info
+      reg_info = reg_info,
+      wrong_number_info = wrong_number_info
     )
 }
+
+
 #' @describeIn rr_map_report Load all available versions of a given product.
 rr_load_all_map_versions <- function(project_dir, doc_type, prod_id) {
+  restore.point("rr_load_all_map_versions")
   fp_dir <- file.path(project_dir, "fp", paste0("prod_", doc_type))
   prod_path <- file.path(fp_dir, prod_id)
   if (!dir.exists(prod_path)) return(list())
 
-  proc_dirs <- list.dirs(prod_path, recursive = FALSE, full.names = TRUE)
-  if (length(proc_dirs) == 0) return(list())
 
-  ver_list <- lapply(proc_dirs, function(pd) {
-    proc_id = fp_proc_dir_to_proc_id(pd)
-    ver_dirs <- fp_proc_dir_to_ver_dirs(pd)
-    if (length(ver_dirs)==0) return(NULL)
-    # TO DO: Handle multiple ver_dirs if necessary
-    ver_dir = ver_dirs[1]
-    df = tryCatch(fp_load_prod_df(ver_dir), error = function(e) NULL)
-    list(proc_id = proc_id, df = df)
+  ver_dirs = fp_all_ok_ver_dirs(fp_dir,prod_id = prod_id)
+  if (length(ver_dirs) == 0) return(list())
+
+  df_list <- lapply(ver_dirs, function(ver_dir) {
+    ver_id = fp_ver_dir_to_proc_id(ver_dir)
+    df = fp_load_prod_df(ver_dir)
+    df
   })
+  ind_df = fp_ver_dir_to_ids(ver_dirs) %>%
+    mutate(name = ifelse(ver_ind >0, ver_id, proc_id))
+  names(df_list) = ind_df$name
+  df_list
 
-  ver_list <- ver_list[!sapply(ver_list, is.null)]
-  ver_list <- ver_list[!sapply(ver_list, function(x) is.null(x$df) || nrow(x$df) == 0)]
-
-  if(length(ver_list) == 0) return(list())
-
-  df_list <- lapply(ver_list, `[[`, "df")
-  names(df_list) <- sapply(ver_list, `[[`, "proc_id")
-  return(df_list)
 }
 
 # NOTE: rr_make_js_maps_data is now obsolete and has been replaced by an
