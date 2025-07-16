@@ -1,72 +1,55 @@
-I have analyzed your request and will now provide the necessary modifications to improve the interactivity of your map report. The changes will ensure that clicking a table cell also reveals the corresponding Stata log output, and clicking a discrepancy message highlights both the table cell and the associated code command.
+Of course! I can implement the feature to highlight numbers in the Stata log output. This is an excellent idea to improve the traceability of results in the report. The key is to handle different number formattings and rounding robustly.
 
-Here are the planned changes:
-1.  **`R/report_map.R`**: I will update the `rr_process_single_map_for_js` function to include code location information (`runid`, `script_num`, `code_line`) with the "wrong number" discrepancy data. This information is needed by the frontend to link a discrepancy back to the code that produced it.
-2.  **`inst/www/report_map.js`**: I will rewrite this file to implement the new frontend logic.
-    *   The `highlight_code` function will be enhanced to open the collapsible log output for a command and scroll to the specific run.
-    *   The event handler for clicking a table cell will be updated to pass the `runid` to the new `highlight_code` function.
-    *   The `apply_wrong_number_info` function will be modified to add the necessary code location data attributes to the discrepancy report items.
-    *   The event handler for clicking a discrepancy report item will be rewritten to highlight both the table cell and the corresponding code line and log output.
+Here are the necessary changes to your project files. I'll modify the JavaScript to implement the client-side logic and the CSS to add a new highlight style.
 
-These changes will create a more intuitive and powerful report for analyzing the replication results.
+### 1. Update CSS for Highlighting
 
-!MODIFICATION rr_process_single_map_for_js in R/report_map.R
+First, let's add a style for the number highlight in your CSS file. This will make the matched number stand out in the log. I'll use a light green background to differentiate it from the existing yellow highlight.
+
+!MODIFICATION report_map.css
 scope = "lines"
-file = "R/report_map.R"
-replace_lines = '''    # --- Process wrong number cases ---
-    wrong_number_info <- list()
-    if ("wrong_number_cases" %in% names(map_df) && "tabid" %in% names(map_df)) {
-        # The list column from JSON can contain NULLs for empty arrays. Filter these out.
-        wnc_df <- map_df %>%
-            dplyr::select(tabid, wrong_number_cases) %>%
-            dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
-
-        if (nrow(wnc_df) > 0) {
-            wrong_number_info <- wnc_df %>%
-                tidyr::unnest(cols = wrong_number_cases) %>%
-                dplyr::select(
-                    tabid,
-                    cell_id,
-                    wrong_number_in_cell,
-                    number_in_stata_output
-                ) %>%
-                dplyr::distinct()
-        }
-    }'''
-description = '''Update `rr_process_single_map_for_js` to include `runid`, `script_num`, and `code_line` in the `wrong_number_info` object. This makes the code location available to the frontend for discrepancy highlighting.'''
+file = "inst/www/repbox.css"
+replace_lines = '''.statically-colored {
+    /* Use a CSS variable for the background color. Set with JS. */
+    /* !important ensures this style overrides any other conflicting rules (e.g., from bootstrap) */
+    background-color: var(--static-bg-color) !important;
+    transition: background-color 0.3s ease;
+}'''
+description = '''Add a new CSS class for highlighting numbers found in Stata logs.'''
 ---
-```R
-    # --- Process wrong number cases ---
-    wrong_number_info <- list()
-    if ("wrong_number_cases" %in% names(map_df) && "tabid" %in% names(map_df)) {
-        # The list column from JSON can contain NULLs for empty arrays. Filter these out.
-        # We select the key identifiers to link the discrepancy back to its source.
-        wnc_df <- map_df %>%
-            dplyr::select(tabid, runid, script_num, code_line, wrong_number_cases) %>%
-            dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
+```css
+.statically-colored {
+    /* Use a CSS variable for the background color. Set with JS. */
+    /* !important ensures this style overrides any other conflicting rules (e.g., from bootstrap) */
+    background-color: var(--static-bg-color) !important;
+    transition: background-color 0.3s ease;
+}
 
-        if (nrow(wnc_df) > 0) {
-            wrong_number_info <- wnc_df %>%
-                tidyr::unnest(cols = wrong_number_cases) %>%
-                dplyr::select(
-                    tabid,
-                    cell_id,
-                    wrong_number_in_cell,
-                    number_in_stata_output,
-                    runid,
-                    script_num,
-                    code_line
-                ) %>%
-                dplyr::distinct()
-        }
-    }
+.number-highlight {
+    background-color: #a0e8a0; /* Light green */
+    font-weight: bold;
+    border-radius: 3px;
+    padding: 0 2px;
+}
 ```
-!END_MODIFICATION rr_process_single_map_for_js in R/report_map.R
-!MODIFICATION inst/www/report_map.js
+!END_MODIFICATION report_map.css
+
+### 2. Update JavaScript Logic
+
+Next, I'll update the main JavaScript file, `report_map.js`. The changes are spread across several functions, so rewriting the entire file is the cleanest approach. The core of this change is a new `highlight_number_in_log` function that intelligently finds and highlights the correct number.
+
+Here's a summary of the JavaScript changes:
+*   A new helper function, `highlight_number_in_log`, is added. It parses numbers from table cells (handling negative numbers in parentheses) and searches the log text for the best match, accounting for rounding.
+*   The `clear_all_highlights` function is updated to also remove these new number highlights.
+*   The `highlight_code` function is modified to accept a number to search for and to call the new helper.
+*   The `apply_wrong_number_info` function is updated to add the correct Stata number to a `data-` attribute in the discrepancy report, making it available on click.
+*   The click handlers for table cells and discrepancy report items are updated to pass the relevant number to `highlight_code`.
+
+!MODIFICATION report_map.js
 scope = "file"
 file = "inst/www/report_map.js"
 is_new_file = false
-description = '''Rewrite the frontend JavaScript to implement enhanced interactivity. This includes showing log output on cell clicks and linking discrepancy reports back to the source code.'''
+description = '''Update JS to highlight numbers in Stata logs. Adds a new helper function, updates click handlers, and modifies the `highlight_code` function to support this new feature.'''
 ---
 ```javascript
 // FILE: report_map.js
@@ -95,7 +78,79 @@ function clear_all_highlights() {
     last_cell_highlights = [];
     // Also clear highlights from discrepancy report clicks
     $(".wrong-number-report-highlight").removeClass("wrong-number-report-highlight");
+
+    // Clear number highlights in logs
+    $('.number-highlight').each(function() {
+        // Replace the span with its text content
+        $(this).replaceWith($(this).text());
+    });
+    // Normalize parent to merge adjacent text nodes
+    $('.logtxt-code').each(function(){
+        if(this.normalize) this.normalize();
+    });
 }
+
+// New helper function to find and highlight a number in a log output
+function highlight_number_in_log(log_element, raw_number_str) {
+    let number_str = String(raw_number_str).trim();
+    let is_negative = number_str.includes('-');
+    if (number_str.startsWith('(') && number_str.endsWith(')')) {
+        is_negative = true;
+    }
+
+    // Keep only digits and decimal point.
+    let cleaned_str = number_str.replace(/[^\d.]/g, '');
+    let target_num = parseFloat(cleaned_str);
+    
+    if (isNaN(target_num)) return;
+    if (is_negative && target_num > 0) {
+        target_num = -target_num;
+    }
+
+    const decimal_places = (cleaned_str.split('.')[1] || '').length;
+    
+    const log_code_element = log_element.find('.logtxt-code');
+    if (log_code_element.length === 0) return;
+
+    // Regex to find all numbers in the log text. Handles integers, floats, and negative numbers.
+    const number_regex = /-?\d*\.?\d+/g;
+    const log_html = log_code_element.html();
+    let best_match = null;
+    let min_diff = Infinity;
+    
+    let match;
+    while ((match = number_regex.exec(log_html)) !== null) {
+        const num_in_log_str = match[0];
+        // Don't match on something that is just a dot or a minus sign.
+        if (num_in_log_str === '.' || num_in_log_str === '-') continue;
+
+        const num_in_log = parseFloat(num_in_log_str);
+        if (isNaN(num_in_log)) continue;
+        
+        // Compare numbers: check if log number rounds to the cell number
+        const scale = Math.pow(10, decimal_places);
+        const rounded_log_num = Math.round(num_in_log * scale) / scale;
+        const rounded_target_num = Math.round(target_num * scale) / scale;
+
+        if (rounded_log_num === rounded_target_num) {
+            // If it rounds correctly, see if it's the closest match so far.
+            const diff = Math.abs(num_in_log - target_num);
+            if (diff < min_diff) {
+                min_diff = diff;
+                best_match = match;
+            }
+        }
+    }
+
+    if (best_match) {
+        const original_text = best_match[0];
+        const new_html = log_html.substring(0, best_match.index) +
+                         '<span class="number-highlight">' + original_text + '</span>' +
+                         log_html.substring(best_match.index + original_text.length);
+        log_code_element.html(new_html);
+    }
+}
+
 
 function clear_static_coloring() {
     // We must iterate over each element to remove the specific style
@@ -185,7 +240,7 @@ function apply_wrong_number_info(mapping) {
             report_html += '<h6>Discrepancies Found (click to locate):</h6><ul>';
             cases_for_tab.forEach(case_item => {
                 // Add data attributes for code location to link back on click
-                report_html += `<li class="wrong-number-report-item" data-cell-id="${case_item.cell_id}" data-runid="${case_item.runid}" data-script-num="${case_item.script_num}" data-code-line="${case_item.code_line}">Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
+                report_html += `<li class="wrong-number-report-item" data-cell-id="${case_item.cell_id}" data-runid="${case_item.runid}" data-script-num="${case_item.script_num}" data-code-line="${case_item.code_line}" data-stata-number="${case_item.number_in_stata_output}">Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
             });
             report_html += '</ul></div>';
 
@@ -199,7 +254,7 @@ function apply_wrong_number_info(mapping) {
 }
 
 
-function highlight_code(script_num, line_num, runid_to_show) {
+function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
     $("#dotabs a[href='#dotab_" + script_num + "']").tab("show");
 
     // Defer actions to allow do-file tab to show first
@@ -232,6 +287,11 @@ function highlight_code(script_num, line_num, runid_to_show) {
                     } else {
                        // No tabs inside log, just scroll
                        run_pre[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                    
+                    // Highlight number in log
+                    if (typeof number_to_find !== 'undefined' && number_to_find !== null && run_pre.length > 0) {
+                        highlight_number_in_log(run_pre, number_to_find);
                     }
                 }
             };
@@ -387,6 +447,7 @@ $(document).ready(function() {
     $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
         clear_all_highlights();
         const cell_id = event.currentTarget.id;
+        const cell_content = $(event.currentTarget).text();
 
         if (active_mapping && active_mapping.cell_to_code_idx && active_mapping.code_locations) {
             const location_idx = active_mapping.cell_to_code_idx[cell_id];
@@ -398,7 +459,7 @@ $(document).ready(function() {
                 const runid = location_data[0];
                 const script_num = location_data[1];
                 const code_line = location_data[2];
-                highlight_code(script_num, code_line, runid);
+                highlight_code(script_num, code_line, runid, cell_content);
             }
         }
     });
@@ -428,6 +489,7 @@ $(document).ready(function() {
         const runid = el.data("runid");
         const script_num = el.data("script-num");
         const code_line = el.data("code-line");
+        const stata_number = el.data("stata-number");
 
         // Highlight table cell
         if (cell_id) {
@@ -448,10 +510,10 @@ $(document).ready(function() {
                 }, 200);
             }
         }
-        
+
         // Highlight corresponding code and log output
         if (script_num && script_num !== 'null' && code_line && code_line !== 'null') {
-            highlight_code(script_num, code_line, runid);
+            highlight_code(script_num, code_line, runid, stata_number);
         }
     });
 
@@ -461,4 +523,6 @@ $(document).ready(function() {
     $("#version_selector").trigger("change");
 });
 ```
-!END_MODIFICATION inst/www/report_map.js
+!END_MODIFICATION report_map.js
+
+These changes will add the requested functionality. When you generate a new report, clicking on a table cell or a discrepancy item will now attempt to find and highlight the corresponding number in the Stata output log, making it much easier to verify the results.

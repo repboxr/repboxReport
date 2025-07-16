@@ -127,6 +127,7 @@ body {
     background-color: #ffd700 !important;
     outline: 2px solid #e0b800 !important;
 }
+
 .statically-colored {
     /* Use a CSS variable for the background color. Set with JS. */
     /* !important ensures this style overrides any other conflicting rules (e.g., from bootstrap) */
@@ -134,6 +135,12 @@ body {
     transition: background-color 0.3s ease;
 }
 
+.number-highlight {
+    background-color: #a0e8a0; /* Light green */
+    font-weight: bold;
+    border-radius: 3px;
+    padding: 0 2px;
+}
 
 /* Tab Styles */
 .nav-pills>li>a {

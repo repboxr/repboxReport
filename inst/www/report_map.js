@@ -24,7 +24,79 @@ function clear_all_highlights() {
     last_cell_highlights = [];
     // Also clear highlights from discrepancy report clicks
     $(".wrong-number-report-highlight").removeClass("wrong-number-report-highlight");
+
+    // Clear number highlights in logs
+    $('.number-highlight').each(function() {
+        // Replace the span with its text content
+        $(this).replaceWith($(this).text());
+    });
+    // Normalize parent to merge adjacent text nodes
+    $('.logtxt-code').each(function(){
+        if(this.normalize) this.normalize();
+    });
 }
+
+// New helper function to find and highlight a number in a log output
+function highlight_number_in_log(log_element, raw_number_str) {
+    let number_str = String(raw_number_str).trim();
+    let is_negative = number_str.includes('-');
+    if (number_str.startsWith('(') && number_str.endsWith(')')) {
+        is_negative = true;
+    }
+
+    // Keep only digits and decimal point.
+    let cleaned_str = number_str.replace(/[^\d.]/g, '');
+    let target_num = parseFloat(cleaned_str);
+
+    if (isNaN(target_num)) return;
+    if (is_negative && target_num > 0) {
+        target_num = -target_num;
+    }
+
+    const decimal_places = (cleaned_str.split('.')[1] || '').length;
+
+    const log_code_element = log_element.find('.logtxt-code');
+    if (log_code_element.length === 0) return;
+
+    // Regex to find all numbers in the log text. Handles integers, floats, and negative numbers.
+    const number_regex = /-?\d*\.?\d+/g;
+    const log_html = log_code_element.html();
+    let best_match = null;
+    let min_diff = Infinity;
+
+    let match;
+    while ((match = number_regex.exec(log_html)) !== null) {
+        const num_in_log_str = match[0];
+        // Don't match on something that is just a dot or a minus sign.
+        if (num_in_log_str === '.' || num_in_log_str === '-') continue;
+
+        const num_in_log = parseFloat(num_in_log_str);
+        if (isNaN(num_in_log)) continue;
+
+        // Compare numbers: check if log number rounds to the cell number
+        const scale = Math.pow(10, decimal_places);
+        const rounded_log_num = Math.round(num_in_log * scale) / scale;
+        const rounded_target_num = Math.round(target_num * scale) / scale;
+
+        if (rounded_log_num === rounded_target_num) {
+            // If it rounds correctly, see if it's the closest match so far.
+            const diff = Math.abs(num_in_log - target_num);
+            if (diff < min_diff) {
+                min_diff = diff;
+                best_match = match;
+            }
+        }
+    }
+
+    if (best_match) {
+        const original_text = best_match[0];
+        const new_html = log_html.substring(0, best_match.index) +
+                         '<span class="number-highlight">' + original_text + '</span>' +
+                         log_html.substring(best_match.index + original_text.length);
+        log_code_element.html(new_html);
+    }
+}
+
 
 function clear_static_coloring() {
     // We must iterate over each element to remove the specific style
@@ -113,7 +185,8 @@ function apply_wrong_number_info(mapping) {
             let report_html = '<div class="wrong-number-report">';
             report_html += '<h6>Discrepancies Found (click to locate):</h6><ul>';
             cases_for_tab.forEach(case_item => {
-                report_html += `<li class="wrong-number-report-item" data-cell-id="${case_item.cell_id}">Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
+                // Add data attributes for code location to link back on click
+                report_html += `<li class="wrong-number-report-item" data-cell-id="${case_item.cell_id}" data-runid="${case_item.runid}" data-script-num="${case_item.script_num}" data-code-line="${case_item.code_line}" data-stata-number="${case_item.number_in_stata_output}">Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
             });
             report_html += '</ul></div>';
 
@@ -127,21 +200,59 @@ function apply_wrong_number_info(mapping) {
 }
 
 
-function highlight_code(script_num, line_num) {
+function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
     $("#dotabs a[href='#dotab_" + script_num + "']").tab("show");
 
-    // Defer actions to allow tab to show first
+    // Defer actions to allow do-file tab to show first
     setTimeout(function() {
+        // Highlight code line
         const code_id = "#L" + line_num + "___" + script_num;
         $(code_id).addClass("code-highlight");
         last_code_highlight = code_id;
 
+        // Scroll code line into view first
         const targetElement = document.querySelector(code_id);
-        if(targetElement) {
+        if (targetElement) {
             targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+
+        // Show and scroll to log output if a valid runid is provided
+        if (runid_to_show && runid_to_show !== 'null') {
+            const log_container = $('#loginfo-' + line_num + '-' + script_num);
+
+            const do_log_show_and_scroll = function() {
+                const run_pre = $('#runid-' + runid_to_show);
+                if (run_pre.length > 0) {
+                    const tab_pane = run_pre.closest('.tab-pane');
+                    if (tab_pane.length > 0) {
+                         const pane_id = tab_pane.attr('id');
+                         // Use event to ensure multi-run tab is shown before scroll
+                         $('a[href="#' + pane_id + '"]').one('shown.bs.tab', function() {
+                             run_pre[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                         }).tab('show');
+                    } else {
+                       // No tabs inside log, just scroll
+                       run_pre[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+
+                    // Highlight number in log
+                    if (typeof number_to_find !== 'undefined' && number_to_find !== null && run_pre.length > 0) {
+                        highlight_number_in_log(run_pre, number_to_find);
+                    }
+                }
+            };
+
+            // If log is not visible, open it and then scroll. If already visible, just scroll.
+            // Note: Bootstrap 3 uses 'in' class for visible collapsed elements
+            if (log_container.hasClass('in')) {
+                do_log_show_and_scroll();
+            } else {
+                log_container.one('shown.bs.collapse', do_log_show_and_scroll).collapse('show');
+            }
         }
     }, 150);
 }
+
 
 function highlight_cells(tabid, cell_ids_string) {
     if (!tabid || !cell_ids_string) return;
@@ -282,6 +393,7 @@ $(document).ready(function() {
     $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
         clear_all_highlights();
         const cell_id = event.currentTarget.id;
+        const cell_content = $(event.currentTarget).text();
 
         if (active_mapping && active_mapping.cell_to_code_idx && active_mapping.code_locations) {
             const location_idx = active_mapping.cell_to_code_idx[cell_id];
@@ -289,9 +401,11 @@ $(document).ready(function() {
                 const location_data = active_mapping.code_locations[location_idx];
                 $(event.currentTarget).addClass("cell-highlight");
                 last_cell_highlights.push("#" + cell_id);
+                // location_data is [runid, script_num, code_line]
+                const runid = location_data[0];
                 const script_num = location_data[1];
                 const code_line = location_data[2];
-                highlight_code(script_num, code_line);
+                highlight_code(script_num, code_line, runid, cell_content);
             }
         }
     });
@@ -316,19 +430,36 @@ $(document).ready(function() {
     // Click on an item in the discrepancy report
     $(document).on("click", ".wrong-number-report-item", function() {
         clear_all_highlights();
-        const cell_id = $(this).data("cell-id");
-        if (!cell_id) return;
-        const cell_element = $("#" + cell_id);
-        if (cell_element.length > 0) {
-            const tab_pane = cell_element.closest('.tab-pane[id^=tabtab]');
-            if (tab_pane.length > 0) {
-                const tab_id = tab_pane.attr('id');
-                $('#tabtabs a[href="#' + tab_id + '"]').tab('show');
+        const el = $(this);
+        const cell_id = el.data("cell-id");
+        const runid = el.data("runid");
+        const script_num = el.data("script-num");
+        const code_line = el.data("code-line");
+        const stata_number = el.data("stata-number");
+
+        // Highlight table cell
+        if (cell_id) {
+            const cell_element = $("#" + cell_id);
+            if (cell_element.length > 0) {
+                const tab_pane = cell_element.closest('.tab-pane[id^=tabtab]');
+                if (tab_pane.length > 0) {
+                    const tab_id = tab_pane.attr('id');
+                    $('#tabtabs a[href="#' + tab_id + '"]').tab('show');
+                }
+                // Use a timeout to allow tab to switch before scrolling and highlighting
+                setTimeout(function() {
+                    cell_element[0].scrollIntoView({ behavior: "smooth", block: "center" });
+                    // Add both red outline and yellow background highlights
+                    cell_element.addClass("wrong-number-report-highlight");
+                    cell_element.addClass("cell-highlight");
+                    last_cell_highlights.push("#" + cell_id);
+                }, 200);
             }
-            setTimeout(function() {
-                cell_element[0].scrollIntoView({ behavior: "smooth", block: "center" });
-                cell_element.addClass("wrong-number-report-highlight");
-            }, 200);
+        }
+
+        // Highlight corresponding code and log output
+        if (script_num && script_num !== 'null' && code_line && code_line !== 'null') {
+            highlight_code(script_num, code_line, runid, stata_number);
         }
     });
 

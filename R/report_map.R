@@ -480,12 +480,13 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
       }
     }
 
-    # --- Process wrong number cases ---
+# --- Process wrong number cases ---
     wrong_number_info <- list()
     if ("wrong_number_cases" %in% names(map_df) && "tabid" %in% names(map_df)) {
         # The list column from JSON can contain NULLs for empty arrays. Filter these out.
+        # We select the key identifiers to link the discrepancy back to its source.
         wnc_df <- map_df %>%
-            dplyr::select(tabid, wrong_number_cases) %>%
+            dplyr::select(tabid, runid, script_num, code_line, wrong_number_cases) %>%
             dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
 
         if (nrow(wnc_df) > 0) {
@@ -495,12 +496,14 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
                     tabid,
                     cell_id,
                     wrong_number_in_cell,
-                    number_in_stata_output
+                    number_in_stata_output,
+                    runid,
+                    script_num,
+                    code_line
                 ) %>%
                 dplyr::distinct()
         }
     }
-
 
     # Return the new structure
     list(
