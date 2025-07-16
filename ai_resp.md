@@ -1,114 +1,49 @@
-Excellent, I've implemented the requested improvements. Here are the changes to make the highlighting more robust and the user experience smoother.
+Hello! As an expert R programmer, I've reviewed your project files and the issues you've described. I've identified the causes and prepared the necessary fixes for your JavaScript code. The issues are related to how highlights are cleared and how scrolling is handled. Here are the detailed changes:
 
-### Summary of Changes:
+### Summary of Changes
 
-1.  **Smarter Scrolling:** The code window will no longer scroll if the relevant Stata log output is already visible on the screen. This makes navigating the report much less jarring.
-2.  **Robust Number Parsing:** The number-matching logic is now much more powerful. It correctly handles standard errors in parentheses (e.g., `(5.23)`), numbers with thousands separators (e.g., `1,234.5`), and values with significance stars (e.g., `0.123***`), by stripping these characters before matching.
-3.  **New Helper Function:** I've added a new helper, `is_in_viewport`, to check element visibility, which is key to the smarter scrolling.
+1.  **Number Highlighting Fix:** The logic for clearing number highlights in the log files was not robust, causing subsequent highlights to fail. I've changed the method from replacing the highlight `<span>` with its text to using jQuery's `unwrap()` method. This correctly restores the underlying structure of the text, allowing new highlights to be applied reliably.
+2.  **Scrolling Behavior Fixes:**
+    *   I've added a check to prevent the do-file pane from scrolling if the relevant code line is already visible on the screen.
+    *   When scrolling is necessary (for both the code line and the log output), I've changed the scroll alignment from `"center"` to `"start"`. This will position the target element at the top of its pane, which addresses your request to maximize the visible area for the log output below the regression command.
 
-Here are the modification blocks for your R project.
+I will now provide the modifications for the `inst/www/report_map.js` file.
 
-### 1. JavaScript File (`inst/www/report_map.js`)
-
-I will apply three targeted modifications to the JavaScript file using `scope = "function"`, as you requested.
-
-!MODIFICATION highlight_number_in_log in report_map.js
+!MODIFICATION clear_all_highlights in report_map.js
 scope = "function"
 file = "inst/www/report_map.js"
-function_name = "highlight_number_in_log"
-description = '''Improve number parsing to handle standard errors in parentheses and other formatting like commas and stars. This makes number highlighting in logs more robust.'''
+function_name = "clear_all_highlights"
+description = '''Fix number re-highlighting by using `unwrap()` to clear previous highlights. This is more robust for restoring the DOM state of the log text and solves the issue where number highlighting only worked on the first click.'''
 ---
 ```javascript
-// New helper function to find and highlight a number in a log output
-function highlight_number_in_log(log_element, raw_number_str) {
-    let number_str = String(raw_number_str).trim();
-
-    // Remove common non-numeric characters like parentheses, commas, and stars.
-    // This makes it robust for standard errors like (0.123) and numbers like 1,234.56***
-    let cleaned_str = number_str.replace(/[(),*]/g, '');
-    let target_num = parseFloat(cleaned_str);
-    
-    if (isNaN(target_num)) return;
-
-    // To determine rounding, count decimal places from a string with only numbers and a dot.
-    const for_decimal_places = number_str.replace(/[^\d.]/g, '');
-    const decimal_places = (for_decimal_places.split('.')[1] || '').length;
-    
-    const log_code_element = log_element.find('.logtxt-code');
-    if (log_code_element.length === 0) return;
-
-    // Regex to find all numbers in the log text. Handles integers, floats, and negative numbers.
-    const number_regex = /-?\d*\.?\d+/g;
-    const log_html = log_code_element.html();
-    let best_match = null;
-    let min_diff = Infinity;
-    
-    let match;
-    while ((match = number_regex.exec(log_html)) !== null) {
-        const num_in_log_str = match[0];
-        // Don't match on something that is just a dot or a minus sign.
-        if (num_in_log_str === '.' || num_in_log_str === '-') continue;
-
-        const num_in_log = parseFloat(num_in_log_str);
-        if (isNaN(num_in_log)) continue;
-        
-        // Compare numbers: check if log number rounds to the cell number
-        const scale = Math.pow(10, decimal_places);
-        const rounded_log_num = Math.round(num_in_log * scale) / scale;
-        const rounded_target_num = Math.round(target_num * scale) / scale;
-
-        if (rounded_log_num === rounded_target_num) {
-            // If it rounds correctly, see if it's the closest match so far.
-            const diff = Math.abs(num_in_log - target_num);
-            if (diff < min_diff) {
-                min_diff = diff;
-                best_match = match;
-            }
-        }
+function clear_all_highlights() {
+    if (last_code_highlight) {
+        $(last_code_highlight).removeClass("code-highlight");
+        last_code_highlight = "";
     }
+    last_cell_highlights.forEach(function(id) {
+        $(id).removeClass("cell-highlight");
+    });
+    last_cell_highlights = [];
+    // Also clear highlights from discrepancy report clicks
+    $(".wrong-number-report-highlight").removeClass("wrong-number-report-highlight");
 
-    if (best_match) {
-        const original_text = best_match[0];
-        const new_html = log_html.substring(0, best_match.index) +
-                         '<span class="number-highlight">' + original_text + '</span>' +
-                         log_html.substring(best_match.index + original_text.length);
-        log_code_element.html(new_html);
-    }
+    // Clear number highlights in logs by unwrapping the highlight span
+    $('.number-highlight').contents().unwrap();
+
+    // Normalize parent to merge adjacent text nodes that might result from unwrapping
+    $('.logtxt-code').each(function(){
+        if(this.normalize) this.normalize();
+    });
 }
 ```
-!END_MODIFICATION highlight_number_in_log in report_map.js
-
-!MODIFICATION is_in_viewport in report_map.js
-scope = "function"
-file = "inst/www/report_map.js"
-insert_after_fun = "highlight_number_in_log"
-description = '''Add a new helper function to determine if an element is currently visible within its scrollable parent container.'''
----
-```javascript
-
-function is_in_viewport(element) {
-    if (!element) return false;
-    // Check visibility within its scrollable container, which is .tab-content
-    const container = element.closest('.tab-content');
-    if (!container) return false; // Should not happen for logs
-
-    const containerRect = container.getBoundingClientRect();
-    const elementRect = element.getBoundingClientRect();
-
-    // Check if the element is within the vertical boundaries of the container
-    return (
-        elementRect.top >= containerRect.top &&
-        elementRect.bottom <= containerRect.bottom
-    );
-}
-```
-!END_MODIFICATION is_in_viewport in report_map.js
+!END_MODIFICATION clear_all_highlights in report_map.js
 
 !MODIFICATION highlight_code in report_map.js
 scope = "function"
 file = "inst/www/report_map.js"
 function_name = "highlight_code"
-description = '''Update `highlight_code` to prevent scrolling if the target log is already in view, and refactor for clarity.'''
+description = '''Update scrolling logic: 1. Prevent scrolling if the target code line is already in view. 2. Change scroll alignment to the top (`block: "start"`) of the pane to maximize visible log area, instead of the center.'''
 ---
 ```javascript
 function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
@@ -121,10 +56,10 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
         $(code_id).addClass("code-highlight");
         last_code_highlight = code_id;
 
-        // Scroll code line into view first
+        // Scroll code line into view first, if it's not already visible.
         const targetElement = document.querySelector(code_id);
-        if (targetElement) {
-            targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (targetElement && !is_in_viewport(targetElement)) {
+            targetElement.scrollIntoView({ behavior: "smooth", block: "start" });
         }
 
         // Show and scroll to log output if a valid runid is provided
@@ -137,7 +72,7 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
                     const scroll_and_highlight = function(pre_element) {
                         // Only scroll if the log is not already visible in its container
                         if (!is_in_viewport(pre_element[0])) {
-                            pre_element[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            pre_element[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
                         }
                         // Highlight number in log
                         if (typeof number_to_find !== 'undefined' && number_to_find !== null) {
@@ -171,3 +106,5 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
 }
 ```
 !END_MODIFICATION highlight_code in report_map.js
+
+These changes should resolve all the issues you mentioned. Please apply them to your project, rebuild the package, and regenerate a report to see the fixes in action. Let me know if you have any other questions

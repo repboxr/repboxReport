@@ -25,12 +25,10 @@ function clear_all_highlights() {
     // Also clear highlights from discrepancy report clicks
     $(".wrong-number-report-highlight").removeClass("wrong-number-report-highlight");
 
-    // Clear number highlights in logs
-    $('.number-highlight').each(function() {
-        // Replace the span with its text content
-        $(this).replaceWith($(this).text());
-    });
-    // Normalize parent to merge adjacent text nodes
+    // Clear number highlights in logs by unwrapping the highlight span
+    $('.number-highlight').contents().unwrap();
+
+    // Normalize parent to merge adjacent text nodes that might result from unwrapping
     $('.logtxt-code').each(function(){
         if(this.normalize) this.normalize();
     });
@@ -39,21 +37,17 @@ function clear_all_highlights() {
 // New helper function to find and highlight a number in a log output
 function highlight_number_in_log(log_element, raw_number_str) {
     let number_str = String(raw_number_str).trim();
-    let is_negative = number_str.includes('-');
-    if (number_str.startsWith('(') && number_str.endsWith(')')) {
-        is_negative = true;
-    }
 
-    // Keep only digits and decimal point.
-    let cleaned_str = number_str.replace(/[^\d.]/g, '');
+    // Remove common non-numeric characters like parentheses, commas, and stars.
+    // This makes it robust for standard errors like (0.123) and numbers like 1,234.56***
+    let cleaned_str = number_str.replace(/[(),*]/g, '');
     let target_num = parseFloat(cleaned_str);
 
     if (isNaN(target_num)) return;
-    if (is_negative && target_num > 0) {
-        target_num = -target_num;
-    }
 
-    const decimal_places = (cleaned_str.split('.')[1] || '').length;
+    // To determine rounding, count decimal places from a string with only numbers and a dot.
+    const for_decimal_places = number_str.replace(/[^\d.]/g, '');
+    const decimal_places = (for_decimal_places.split('.')[1] || '').length;
 
     const log_code_element = log_element.find('.logtxt-code');
     if (log_code_element.length === 0) return;
@@ -97,7 +91,6 @@ function highlight_number_in_log(log_element, raw_number_str) {
     }
 }
 
-
 function clear_static_coloring() {
     // We must iterate over each element to remove the specific style
     // property that was set with '!important'. Standard .css() won't work.
@@ -105,6 +98,23 @@ function clear_static_coloring() {
         this.style.removeProperty('background-color');
         $(this).removeClass("statically-colored");
     });
+}
+
+
+function is_in_viewport(element) {
+    if (!element) return false;
+    // Check visibility within its scrollable container, which is .tab-content
+    const container = element.closest('.tab-content');
+    if (!container) return false; // Should not happen for logs
+
+    const containerRect = container.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+
+    // Check if the element is within the vertical boundaries of the container
+    return (
+        elementRect.top >= containerRect.top &&
+        elementRect.bottom <= containerRect.bottom
+    );
 }
 
 function apply_static_coloring(mapping) {
@@ -210,10 +220,10 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
         $(code_id).addClass("code-highlight");
         last_code_highlight = code_id;
 
-        // Scroll code line into view first
+        // Scroll code line into view first, if it's not already visible.
         const targetElement = document.querySelector(code_id);
-        if (targetElement) {
-            targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
+        if (targetElement && !is_in_viewport(targetElement)) {
+            targetElement.scrollIntoView({ behavior: "smooth", block: "start" });
         }
 
         // Show and scroll to log output if a valid runid is provided
@@ -223,21 +233,27 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
             const do_log_show_and_scroll = function() {
                 const run_pre = $('#runid-' + runid_to_show);
                 if (run_pre.length > 0) {
+                    const scroll_and_highlight = function(pre_element) {
+                        // Only scroll if the log is not already visible in its container
+                        if (!is_in_viewport(pre_element[0])) {
+                            pre_element[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }
+                        // Highlight number in log
+                        if (typeof number_to_find !== 'undefined' && number_to_find !== null) {
+                            highlight_number_in_log(pre_element, number_to_find);
+                        }
+                    };
+
                     const tab_pane = run_pre.closest('.tab-pane');
                     if (tab_pane.length > 0) {
                          const pane_id = tab_pane.attr('id');
                          // Use event to ensure multi-run tab is shown before scroll
                          $('a[href="#' + pane_id + '"]').one('shown.bs.tab', function() {
-                             run_pre[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+                             scroll_and_highlight(run_pre);
                          }).tab('show');
                     } else {
-                       // No tabs inside log, just scroll
-                       run_pre[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }
-
-                    // Highlight number in log
-                    if (typeof number_to_find !== 'undefined' && number_to_find !== null && run_pre.length > 0) {
-                        highlight_number_in_log(run_pre, number_to_find);
+                       // No tabs inside log, just scroll and highlight
+                       scroll_and_highlight(run_pre);
                     }
                 }
             };
@@ -252,7 +268,6 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
         }
     }, 150);
 }
-
 
 function highlight_cells(tabid, cell_ids_string) {
     if (!tabid || !cell_ids_string) return;
