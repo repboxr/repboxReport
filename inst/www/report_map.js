@@ -13,67 +13,87 @@ var active_mapping = {};
 var last_code_highlight = "";
 var last_cell_highlights = [];
 
+// Globals for robust and performant number highlighting
+var original_log_htmls = {}; // Cache for pristine log HTML, keyed by the log <pre> element's ID.
+var last_highlighted_log_id = null; // ID of the last log <pre> element that was modified.
+
 function clear_all_highlights() {
+    console.log("Clearing all highlights...");
+
+    // Clear code line highlight
     if (last_code_highlight) {
         $(last_code_highlight).removeClass("code-highlight");
         last_code_highlight = "";
     }
+
+    // Clear table cell highlights
     last_cell_highlights.forEach(function(id) {
         $(id).removeClass("cell-highlight");
     });
     last_cell_highlights = [];
-    // Also clear highlights from discrepancy report clicks
+
+    // Clear highlights from discrepancy report clicks
     $(".wrong-number-report-highlight").removeClass("wrong-number-report-highlight");
 
-    // Clear number highlights in logs by unwrapping the highlight span
-    $('.number-highlight').contents().unwrap();
-
-    // Normalize parent to merge adjacent text nodes that might result from unwrapping
-    $('.logtxt-code').each(function(){
-        if(this.normalize) this.normalize();
-    });
+    // --- NEW EFFICIENT LOG CLEARING ---
+    // Instead of searching the whole DOM, we only restore the single log that was last changed.
+    if (last_highlighted_log_id && original_log_htmls[last_highlighted_log_id]) {
+        const log_code_element = $("#" + last_highlighted_log_id).find('.logtxt-code');
+        if (log_code_element.length > 0) {
+            log_code_element.html(original_log_htmls[last_highlighted_log_id]);
+            console.log("Restored original HTML for log #" + last_highlighted_log_id);
+        }
+    }
+    last_highlighted_log_id = null;
 }
 
 // New helper function to find and highlight a number in a log output
 function highlight_number_in_log(log_element, raw_number_str) {
-    let number_str = String(raw_number_str).trim();
+    const log_id = log_element.attr('id');
+    console.log("Attempting to highlight number '" + raw_number_str + "' in log #" + log_id);
 
-    // Remove common non-numeric characters like parentheses, commas, and stars.
-    // This makes it robust for standard errors like (0.123) and numbers like 1,234.56***
+    let number_str = String(raw_number_str).trim();
     let cleaned_str = number_str.replace(/[(),*]/g, '');
     let target_num = parseFloat(cleaned_str);
 
-    if (isNaN(target_num)) return;
+    if (isNaN(target_num)) {
+        console.warn("Could not parse number from cell content:", raw_number_str);
+        return;
+    }
 
-    // To determine rounding, count decimal places from a string with only numbers and a dot.
     const for_decimal_places = number_str.replace(/[^\d.]/g, '');
     const decimal_places = (for_decimal_places.split('.')[1] || '').length;
 
     const log_code_element = log_element.find('.logtxt-code');
     if (log_code_element.length === 0) return;
 
-    // Regex to find all numbers in the log text. Handles integers, floats, and negative numbers.
+    // --- NEW ROBUST HIGHLIGHTING LOGIC ---
+    // 1. If we haven't already, cache the original, unmodified HTML of the log.
+    if (!original_log_htmls[log_id]) {
+        original_log_htmls[log_id] = log_code_element.html();
+        console.log("Cached original HTML for log #" + log_id);
+    }
+
+    // 2. Always start the search from the pristine, original HTML.
+    const log_html = original_log_htmls[log_id];
+
     const number_regex = /-?\d*\.?\d+/g;
-    const log_html = log_code_element.html();
     let best_match = null;
     let min_diff = Infinity;
 
     let match;
     while ((match = number_regex.exec(log_html)) !== null) {
         const num_in_log_str = match[0];
-        // Don't match on something that is just a dot or a minus sign.
         if (num_in_log_str === '.' || num_in_log_str === '-') continue;
 
         const num_in_log = parseFloat(num_in_log_str);
         if (isNaN(num_in_log)) continue;
 
-        // Compare numbers: check if log number rounds to the cell number
         const scale = Math.pow(10, decimal_places);
         const rounded_log_num = Math.round(num_in_log * scale) / scale;
         const rounded_target_num = Math.round(target_num * scale) / scale;
 
         if (rounded_log_num === rounded_target_num) {
-            // If it rounds correctly, see if it's the closest match so far.
             const diff = Math.abs(num_in_log - target_num);
             if (diff < min_diff) {
                 min_diff = diff;
@@ -83,34 +103,34 @@ function highlight_number_in_log(log_element, raw_number_str) {
     }
 
     if (best_match) {
+        console.log("Found best match:", best_match[0], "at index", best_match.index);
         const original_text = best_match[0];
         const new_html = log_html.substring(0, best_match.index) +
                          '<span class="number-highlight">' + original_text + '</span>' +
                          log_html.substring(best_match.index + original_text.length);
         log_code_element.html(new_html);
+        last_highlighted_log_id = log_id; // Remember which log we modified.
+    } else {
+        console.log("No matching number found in log #" + log_id);
+        log_code_element.html(log_html); // Restore original if no match found
     }
 }
 
 function clear_static_coloring() {
-    // We must iterate over each element to remove the specific style
-    // property that was set with '!important'. Standard .css() won't work.
     $(".statically-colored").each(function() {
         this.style.removeProperty('background-color');
         $(this).removeClass("statically-colored");
     });
 }
 
-
 function is_in_viewport(element) {
     if (!element) return false;
-    // Check visibility within its scrollable container, which is .tab-content
     const container = element.closest('.tab-content');
-    if (!container) return false; // Should not happen for logs
+    if (!container) return false;
 
     const containerRect = container.getBoundingClientRect();
     const elementRect = element.getBoundingClientRect();
 
-    // Check if the element is within the vertical boundaries of the container
     return (
         elementRect.top >= containerRect.top &&
         elementRect.bottom <= containerRect.bottom
@@ -130,11 +150,7 @@ function apply_static_coloring(mapping) {
                 cell_ids.forEach(id => {
                     const cell_selector = "#" + id.trim();
                     const element = $(cell_selector);
-
                     if (element.length > 0) {
-                        // Use the DOM element's setProperty method to add '!important'.
-                        // This ensures our coloring rule has the highest priority and will
-                        // override any conflicting styles (like from Bootstrap or other CSS).
                         element[0].style.setProperty('background-color', info.color, 'important');
                         element.addClass('statically-colored');
                     }
@@ -145,7 +161,6 @@ function apply_static_coloring(mapping) {
 }
 
 function apply_wrong_number_info(mapping) {
-    // Clear previous reports and styling
     $(".wrong-number-report").remove();
     $(".wrong-number-cell").each(function() {
         this.style.removeProperty('background-image');
@@ -156,7 +171,6 @@ function apply_wrong_number_info(mapping) {
         return;
     }
 
-    // Build a map from cell ID to its regression color for this specific map version
     const cell_to_color = {};
     if (mapping.reg_info) {
         for (const reg_ind in mapping.reg_info) {
@@ -171,36 +185,29 @@ function apply_wrong_number_info(mapping) {
 
     const wrong_cases_by_tab = {};
     mapping.wrong_number_info.forEach(case_item => {
-        const tabid = String(case_item.tabid); // Ensure tabid is a string
-        if (!wrong_cases_by_tab[tabid]) {
-            wrong_cases_by_tab[tabid] = [];
-        }
+        const tabid = String(case_item.tabid);
+        if (!wrong_cases_by_tab[tabid]) wrong_cases_by_tab[tabid] = [];
         wrong_cases_by_tab[tabid].push(case_item);
 
-        // Apply styling to the cell
         const cell_element = $("#" + case_item.cell_id);
         if (cell_element.length > 0) {
             cell_element.addClass("wrong-number-cell");
-            const reg_color = cell_to_color[case_item.cell_id] || '#f0f0f0'; // Default color if not found
+            const reg_color = cell_to_color[case_item.cell_id] || '#f0f0f0';
             const gradient = `linear-gradient(45deg, #cccccc, ${reg_color})`;
-            // This will be rendered on top of the background-color set by static coloring
             cell_element[0].style.setProperty('background-image', gradient, 'important');
         }
     });
 
-    // Generate and append reports for each table that has wrong numbers
     for (const tabid in wrong_cases_by_tab) {
         if (wrong_cases_by_tab.hasOwnProperty(tabid)) {
             const cases_for_tab = wrong_cases_by_tab[tabid];
             let report_html = '<div class="wrong-number-report">';
             report_html += '<h6>Discrepancies Found (click to locate):</h6><ul>';
             cases_for_tab.forEach(case_item => {
-                // Add data attributes for code location to link back on click
                 report_html += `<li class="wrong-number-report-item" data-cell-id="${case_item.cell_id}" data-runid="${case_item.runid}" data-script-num="${case_item.script_num}" data-code-line="${case_item.code_line}" data-stata-number="${case_item.number_in_stata_output}">Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
             });
             report_html += '</ul></div>';
 
-            // Find the correct table div to append to
             const table_container = $("#tabtab" + tabid + " .art-tab-div");
             if (table_container.length > 0) {
                 table_container.append(report_html);
@@ -209,24 +216,22 @@ function apply_wrong_number_info(mapping) {
     }
 }
 
-
 function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
     $("#dotabs a[href='#dotab_" + script_num + "']").tab("show");
 
-    // Defer actions to allow do-file tab to show first
-    setTimeout(function() {
-        // Highlight code line
+    //setTimeout(function() {
         const code_id = "#L" + line_num + "___" + script_num;
         $(code_id).addClass("code-highlight");
         last_code_highlight = code_id;
 
-        // Scroll code line into view first, if it's not already visible.
         const targetElement = document.querySelector(code_id);
         if (targetElement && !is_in_viewport(targetElement)) {
+            console.log("Scrolling code line into view...");
             targetElement.scrollIntoView({ behavior: "smooth", block: "start" });
+        } else {
+            console.log("Code line already in view, not scrolling.");
         }
 
-        // Show and scroll to log output if a valid runid is provided
         if (runid_to_show && runid_to_show !== 'null') {
             const log_container = $('#loginfo-' + line_num + '-' + script_num);
 
@@ -234,11 +239,12 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
                 const run_pre = $('#runid-' + runid_to_show);
                 if (run_pre.length > 0) {
                     const scroll_and_highlight = function(pre_element) {
-                        // Only scroll if the log is not already visible in its container
                         if (!is_in_viewport(pre_element[0])) {
+                            console.log("Scrolling log into view...");
                             pre_element[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        } else {
+                            console.log("Log already in view, not scrolling.");
                         }
-                        // Highlight number in log
                         if (typeof number_to_find !== 'undefined' && number_to_find !== null) {
                             highlight_number_in_log(pre_element, number_to_find);
                         }
@@ -247,26 +253,22 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
                     const tab_pane = run_pre.closest('.tab-pane');
                     if (tab_pane.length > 0) {
                          const pane_id = tab_pane.attr('id');
-                         // Use event to ensure multi-run tab is shown before scroll
                          $('a[href="#' + pane_id + '"]').one('shown.bs.tab', function() {
                              scroll_and_highlight(run_pre);
                          }).tab('show');
                     } else {
-                       // No tabs inside log, just scroll and highlight
                        scroll_and_highlight(run_pre);
                     }
                 }
             };
 
-            // If log is not visible, open it and then scroll. If already visible, just scroll.
-            // Note: Bootstrap 3 uses 'in' class for visible collapsed elements
             if (log_container.hasClass('in')) {
                 do_log_show_and_scroll();
             } else {
                 log_container.one('shown.bs.collapse', do_log_show_and_scroll).collapse('show');
             }
         }
-    }, 150);
+    //}, 150);
 }
 
 function highlight_cells(tabid, cell_ids_string) {
@@ -289,9 +291,7 @@ function highlight_cells(tabid, cell_ids_string) {
     }, 150);
 }
 
-// Function to update the version selector based on the active map type
 function update_version_selector() {
-    // The source of map keys depends on the data loading mode.
     const source = data_is_embedded ? all_maps : report_manifest;
     const versions = Object.keys(source[active_map_type] || {});
     const version_selector = $("#version_selector");
@@ -311,7 +311,6 @@ function update_all_cell_titles() {
 
         $(this).removeClass("conflict-indicator");
 
-        // 1. Add info from the currently active map version
         if (cell_map && cell_map[cell_id]) {
             const info = cell_map[cell_id];
             if (info.reg_ind != null) title_parts.push(`reg_ind: ${info.reg_ind}`);
@@ -321,7 +320,6 @@ function update_all_cell_titles() {
             }
         }
 
-        // 2. Add static conflict info if it exists
         if (typeof cell_conflict_data !== 'undefined' && cell_conflict_data[cell_id]) {
             title_parts.push(cell_conflict_data[cell_id]);
             has_conflict = true;
@@ -329,12 +327,12 @@ function update_all_cell_titles() {
 
         $(this).attr('title', title_parts.join('\n'));
 
-        // 3. Add indicator class if needed
         if (has_conflict) {
             $(this).addClass("conflict-indicator");
         }
     });
 }
+
 function handle_map_change() {
     clear_all_highlights();
 
@@ -346,11 +344,9 @@ function handle_map_change() {
     };
 
     if (data_is_embedded) {
-        // EMBEDDED MODE: Simply look up the data in the global object
         const map_data = all_maps[active_map_type] ? all_maps[active_map_type][active_version] : null;
         apply_updates(map_data);
     } else {
-        // EXTERNAL MODE: Fetch the data from the corresponding JSON file
         const file_path = report_manifest[active_map_type]?.[active_version];
         if (!file_path) {
             apply_updates(null);
@@ -358,29 +354,22 @@ function handle_map_change() {
         }
 
         const selectors = $("#map_type_selector, #version_selector");
-        selectors.prop("disabled", true); // Disable controls during fetch
+        selectors.prop("disabled", true);
 
         fetch(file_path)
             .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
                 return response.json();
             })
-            .then(data => {
-                apply_updates(data);
-            })
+            .then(data => apply_updates(data))
             .catch(error => {
                 console.error("Failed to fetch map data:", error);
                 alert("Failed to load map data. Please ensure you are viewing this report via a web server and the file exists: " + file_path);
                 apply_updates(null);
             })
-            .finally(() => {
-                selectors.prop("disabled", false); // Re-enable controls
-            });
+            .finally(() => selectors.prop("disabled", false));
     }
 }
-
 
 $(document).ready(function() {
     const map_types = Object.keys(data_is_embedded ? all_maps : report_manifest);
@@ -389,24 +378,22 @@ $(document).ready(function() {
         return;
     }
 
-    // --- 1. DEFINE EVENT HANDLERS FIRST ---
-
-    // Change map type
     $("#map_type_selector").on("change", function() {
         active_map_type = $(this).val();
         update_version_selector();
-        $("#version_selector").trigger("change"); // Trigger version change to update view
+        $("#version_selector").trigger("change");
     });
 
-    // Change map version
     $("#version_selector").on("change", function() {
         active_version = $(this).val();
         handle_map_change();
     });
 
-    // Click on a table cell
     $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
+        console.log("--- Cell Click Event ---");
+        console.log("Cell clicked:", event.currentTarget.id);
         clear_all_highlights();
+
         const cell_id = event.currentTarget.id;
         const cell_content = $(event.currentTarget).text();
 
@@ -416,18 +403,21 @@ $(document).ready(function() {
                 const location_data = active_mapping.code_locations[location_idx];
                 $(event.currentTarget).addClass("cell-highlight");
                 last_cell_highlights.push("#" + cell_id);
-                // location_data is [runid, script_num, code_line]
+
                 const runid = location_data[0];
                 const script_num = location_data[1];
                 const code_line = location_data[2];
                 highlight_code(script_num, code_line, runid, cell_content);
+            } else {
+                console.log("No code location found for cell:", cell_id);
             }
         }
     });
 
-    // Click on a regression command in a do-file
     $(document).on("click", ".reg-cmd", function(event) {
+        console.log("--- Reg-Cmd Click Event ---");
         clear_all_highlights();
+
         const code_el = $(event.currentTarget);
         const code_id_parts = code_el.attr("id").split("___");
         const line = code_id_parts[0].substring(1);
@@ -442,9 +432,10 @@ $(document).ready(function() {
         }
     });
 
-    // Click on an item in the discrepancy report
     $(document).on("click", ".wrong-number-report-item", function() {
+        console.log("--- Wrong Number Report Click ---");
         clear_all_highlights();
+
         const el = $(this);
         const cell_id = el.data("cell-id");
         const runid = el.data("runid");
@@ -452,7 +443,6 @@ $(document).ready(function() {
         const code_line = el.data("code-line");
         const stata_number = el.data("stata-number");
 
-        // Highlight table cell
         if (cell_id) {
             const cell_element = $("#" + cell_id);
             if (cell_element.length > 0) {
@@ -461,10 +451,8 @@ $(document).ready(function() {
                     const tab_id = tab_pane.attr('id');
                     $('#tabtabs a[href="#' + tab_id + '"]').tab('show');
                 }
-                // Use a timeout to allow tab to switch before scrolling and highlighting
                 setTimeout(function() {
                     cell_element[0].scrollIntoView({ behavior: "smooth", block: "center" });
-                    // Add both red outline and yellow background highlights
                     cell_element.addClass("wrong-number-report-highlight");
                     cell_element.addClass("cell-highlight");
                     last_cell_highlights.push("#" + cell_id);
@@ -472,13 +460,11 @@ $(document).ready(function() {
             }
         }
 
-        // Highlight corresponding code and log output
         if (script_num && script_num !== 'null' && code_line && code_line !== 'null') {
             highlight_code(script_num, code_line, runid, stata_number);
         }
     });
 
-    // --- 2. RUN INITIALIZATION LOGIC ---
     active_map_type = $("#map_type_selector").val();
     update_version_selector();
     $("#version_selector").trigger("change");
