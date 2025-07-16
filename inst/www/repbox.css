@@ -109,6 +109,7 @@ body {
     padding: 2px 4px;
     border: 1px solid #ddd;
     text-align: center;
+    position: relative; /* For conflict indicator positioning */
 }
 .art-tab-div table th {
     background-color: #f5f5f5;
@@ -157,10 +158,22 @@ body {
     overflow-y: auto;
 }
 
-/* Discrepancy Highlighting */
+/* Discrepancy Highlighting & Conflict Indicators */
 .wrong-number-cell {
     /* This class is now just a marker. Styling is applied via JS using a gradient. */
 }
+
+.conflict-indicator::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 0;
+    height: 0;
+    border-top: 6px solid #dc3545; /* Bootstrap danger red */
+    border-left: 6px solid transparent;
+}
+
 
 /* For interactive report click */
 .wrong-number-report-highlight {

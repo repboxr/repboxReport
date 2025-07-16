@@ -181,26 +181,34 @@ function update_all_cell_titles() {
     $("[id^=c][id*=_]").each(function() {
         const cell_id = this.id;
         let title_parts = [`cell_id: ${cell_id}`];
+        let has_conflict = false;
+
+        $(this).removeClass("conflict-indicator");
 
         // 1. Add info from the currently active map version
         if (cell_map && cell_map[cell_id]) {
             const info = cell_map[cell_id];
-            if (info.reg_ind !== null) title_parts.push(`reg_ind: ${info.reg_ind}`);
-            if (info.runid !== null) title_parts.push(`runid: ${info.runid}`);
-            if (info.script_num !== null && info.code_line !== null) {
-                title_parts.push(`script: ${info.script_num}, line: ${info.code_line}`);
+            if (info.reg_ind != null) title_parts.push(`reg_ind: ${info.reg_ind}`);
+            if (info.runid != null) title_parts.push(`runid: ${info.runid}`);
+            if (info.script_file != null && info.code_line != null) {
+                title_parts.push(`script: ${info.script_file}, line: ${info.code_line}`);
             }
         }
 
         // 2. Add static conflict info if it exists
         if (typeof cell_conflict_data !== 'undefined' && cell_conflict_data[cell_id]) {
             title_parts.push(cell_conflict_data[cell_id]);
+            has_conflict = true;
         }
 
         $(this).attr('title', title_parts.join('\n'));
+
+        // 3. Add indicator class if needed
+        if (has_conflict) {
+            $(this).addClass("conflict-indicator");
+        }
     });
 }
-
 function handle_map_change() {
     clear_all_highlights();
 

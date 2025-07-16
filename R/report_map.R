@@ -118,53 +118,100 @@ rr_map_report <- function(project_dir,
 
   # Pre-compute conflict information for tooltips.
   # A conflict exists if a cell_id maps to different script/line combinations
-  # across different map versions.
+  # across different map versions, or if it has a wrong_number_case.
   cell_conflict_data <- {
     all_maps_flat <- unlist(all_map_types, recursive = FALSE)
-    if (length(all_maps_flat) > 1) { # Conflicts only possible with more than 1 map version
-        all_maps_flat_df <- purrr::map_dfr(all_maps_flat, ~.x, .id = "map_version_id")
+    all_maps_flat_df <- purrr::map_dfr(all_maps_flat, ~.x, .id = "map_version_id")
 
-        conflict_df <- all_maps_flat_df %>%
-          rr_robust_script_num_join(parcels$stata_source$script_source) %>%
-          dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
-          dplyr::select(map_version_id, script_num, code_line, cell_ids) %>%
-          dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
-          tidyr::unnest(cell_id) %>%
-          dplyr::mutate(cell_id = trimws(cell_id)) %>%
-          dplyr::filter(cell_id != "") %>%
-          dplyr::select(map_version_id, cell_id, script_num, code_line) %>%
-          dplyr::distinct()
+    # 1. Mapping conflicts
+    mapping_conflict_msgs <- list()
+    if (length(all_maps_flat) > 1 && nrow(all_maps_flat_df) > 0) {
+      conflict_df <- all_maps_flat_df %>%
+        rr_robust_script_num_join(parcels$stata_source$script_source) %>%
+        dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
+        dplyr::select(map_version_id, script_num, code_line, cell_ids) %>%
+        dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
+        tidyr::unnest(cell_id) %>%
+        dplyr::mutate(cell_id = trimws(cell_id)) %>%
+        dplyr::filter(cell_id != "") %>%
+        dplyr::select(map_version_id, cell_id, script_num, code_line) %>%
+        dplyr::distinct()
 
-        conflict_summary <- conflict_df %>%
-          dplyr::group_by(cell_id) %>%
-          dplyr::mutate(target_key = paste(script_num, code_line, sep = ":")) %>%
-          dplyr::summarise(
-            num_unique_targets = dplyr::n_distinct(target_key),
-            conflict_info = if (dplyr::n_distinct(target_key) > 1) {
-              list(dplyr::tibble(map_version_id = map_version_id, script_num = script_num, code_line = code_line))
-            } else {
-              list(NULL)
-            }
-          ) %>%
-          dplyr::filter(num_unique_targets > 1)
+      if (nrow(conflict_df) > 0) {
+          conflict_summary <- conflict_df %>%
+            dplyr::group_by(cell_id) %>%
+            dplyr::mutate(target_key = paste(script_num, code_line, sep = ":")) %>%
+            dplyr::summarise(
+              num_unique_targets = dplyr::n_distinct(target_key),
+              conflict_info = if (dplyr::n_distinct(target_key) > 1) {
+                list(dplyr::tibble(map_version_id = map_version_id, script_num = script_num, code_line = code_line))
+              } else {
+                list(NULL)
+              },
+              .groups = "drop"
+            ) %>%
+            dplyr::filter(num_unique_targets > 1)
 
-        if (nrow(conflict_summary) > 0) {
-          setNames(
-            lapply(conflict_summary$conflict_info, function(info_df) {
-              details <- info_df %>%
-                dplyr::distinct(map_version_id, script_num, code_line) %>%
-                dplyr::mutate(msg = paste0(map_version_id, " -> S", script_num, " L", code_line)) %>%
-                dplyr::pull(msg)
-              paste0("Note: Mapped differently in other versions:\n - ", paste(details, collapse="\n - "))
-            }),
-            conflict_summary$cell_id
-          )
-        } else {
-          list()
-        }
-    } else {
-      list()
+          if (nrow(conflict_summary) > 0) {
+            mapping_conflict_msgs <- setNames(
+              lapply(conflict_summary$conflict_info, function(info_df) {
+                details <- info_df %>%
+                  dplyr::distinct(map_version_id, script_num, code_line) %>%
+                  dplyr::mutate(msg = paste0(map_version_id, " -> S", script_num, " L", code_line)) %>%
+                  dplyr::pull(msg)
+                paste0("Note: Mapped differently in other versions:\n - ", paste(details, collapse="\n - "))
+              }),
+              conflict_summary$cell_id
+            )
+          }
+      }
     }
+
+    # 2. Wrong number conflicts
+    wrong_num_msgs <- list()
+    if ("wrong_number_cases" %in% names(all_maps_flat_df) && nrow(all_maps_flat_df) > 0) {
+        wnc_df <- all_maps_flat_df %>%
+            dplyr::select(map_version_id, wrong_number_cases) %>%
+            dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
+
+        if (nrow(wnc_df) > 0) {
+            wrong_num_conflict_df <- wnc_df %>%
+                tidyr::unnest(cols = wrong_number_cases) %>%
+                dplyr::select(map_version_id, cell_id) %>%
+                dplyr::distinct() %>%
+                dplyr::filter(!is.na(cell_id)) %>%
+                dplyr::group_by(cell_id) %>%
+                dplyr::summarise(versions = paste(sort(unique(map_version_id)), collapse=", "), .groups="drop")
+
+            if (nrow(wrong_num_conflict_df) > 0) {
+                wrong_num_msgs <- setNames(
+                    paste0("Note: Has wrong number discrepancy in version(s): ", wrong_num_conflict_df$versions),
+                    wrong_num_conflict_df$cell_id
+                )
+            }
+        }
+    }
+
+    # 3. Combine messages
+    all_conflict_cells <- unique(c(names(mapping_conflict_msgs), names(wrong_num_msgs)))
+    if (length(all_conflict_cells) > 0) {
+        li = lapply(all_conflict_cells, function(cid) {
+          restore.point("ssfk")
+          msg1 = msg2 = ""
+          if (cid %in% names(mapping_conflict_msgs)) {
+            msg1 <- mapping_conflict_msgs[[cid]]
+          }
+          if (cid %in% names(wrong_num_msgs)) {
+            msg2 <- wrong_num_msgs[[cid]]
+          }
+          # Filter NULLs and join with newline
+          paste(c(msg1, msg2)[!sapply(c(msg1, msg2), is.null)], collapse="\n")
+        })
+        li = setNames(li,all_conflict_cells)
+    } else {
+        li =list()
+    }
+    li
   }
   js_conflict_data <- jsonlite::toJSON(cell_conflict_data, auto_unbox = TRUE)
 
@@ -325,7 +372,6 @@ rr_robust_script_num_join <- function(map_df, stata_source) {
   return(map_df)
 }
 
-
 # Helper to process a single map data frame into a JS-ready list structure
 rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
     restore.point("rr_process_single_map_for_js")
@@ -387,8 +433,22 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
         runid = dplyr::first(runid),
         script_num = dplyr::first(script_num),
         code_line = dplyr::first(code_line),
-        reg_ind = dplyr::first(reg_ind)
+        reg_ind = dplyr::first(reg_ind),
+        .groups = "drop"
       )
+
+    if(nrow(cell_map_df_tooltip) > 0) {
+        script_file_lookup <- stata_source %>%
+            dplyr::select(script_num, file_path) %>%
+            dplyr::mutate(script_file = basename(file_path)) %>%
+            dplyr::select(-file_path) %>%
+            dplyr::distinct()
+
+        cell_map_df_tooltip <- cell_map_df_tooltip %>%
+            dplyr::left_join(script_file_lookup, by = "script_num") %>%
+            dplyr::select(-script_num)
+    }
+
 
     cell_map <- if (nrow(cell_map_df_tooltip) > 0) {
       purrr::transpose(cell_map_df_tooltip[, -1]) %>%
@@ -452,7 +512,6 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
       cell_map = cell_map
     )
 }
-
 #' @describeIn rr_map_report Load all available versions of a given product.
 rr_load_all_map_versions <- function(project_dir, doc_type, prod_id) {
   restore.point("rr_load_all_map_versions")
