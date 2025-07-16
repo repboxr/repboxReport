@@ -20,23 +20,19 @@ var last_highlighted_log_id = null; // ID of the last log <pre> element that was
 function clear_all_highlights() {
     console.log("Clearing all highlights...");
 
-    // Clear code line highlight
     if (last_code_highlight) {
         $(last_code_highlight).removeClass("code-highlight");
         last_code_highlight = "";
     }
 
-    // Clear table cell highlights
     last_cell_highlights.forEach(function(id) {
         $(id).removeClass("cell-highlight");
     });
     last_cell_highlights = [];
 
-    // Clear highlights from discrepancy report clicks
     $(".wrong-number-report-highlight").removeClass("wrong-number-report-highlight");
 
-    // --- NEW EFFICIENT LOG CLEARING ---
-    // Instead of searching the whole DOM, we only restore the single log that was last changed.
+    // Only restore the last modified log. The new highlight function will handle its own state.
     if (last_highlighted_log_id && original_log_htmls[last_highlighted_log_id]) {
         const log_code_element = $("#" + last_highlighted_log_id).find('.logtxt-code');
         if (log_code_element.length > 0) {
@@ -47,45 +43,37 @@ function clear_all_highlights() {
     last_highlighted_log_id = null;
 }
 
-// New helper function to find and highlight a number in a log output
+// Find and highlight a number in a log output
 function highlight_number_in_log(log_element, raw_number_str) {
     const log_id = log_element.attr('id');
-    console.log("Attempting to highlight number '" + raw_number_str + "' in log #" + log_id);
-
-    let number_str = String(raw_number_str).trim();
-    let cleaned_str = number_str.replace(/[(),*]/g, '');
-    let target_num = parseFloat(cleaned_str);
-
-    if (isNaN(target_num)) {
-        console.warn("Could not parse number from cell content:", raw_number_str);
-        return;
-    }
-
-    const for_decimal_places = number_str.replace(/[^\d.]/g, '');
-    const decimal_places = (for_decimal_places.split('.')[1] || '').length;
-
     const log_code_element = log_element.find('.logtxt-code');
     if (log_code_element.length === 0) return;
 
-    // --- NEW ROBUST HIGHLIGHTING LOGIC ---
-    // 1. If we haven't already, cache the original, unmodified HTML of the log.
+    // 1. Ensure original HTML is cached.
     if (!original_log_htmls[log_id]) {
         original_log_htmls[log_id] = log_code_element.html();
-        console.log("Cached original HTML for log #" + log_id);
     }
 
     // 2. Always start the search from the pristine, original HTML.
     const log_html = original_log_htmls[log_id];
 
+    // 3. Find the best match.
+    let number_str = String(raw_number_str).trim();
+    let cleaned_str = number_str.replace(/[(),*]/g, '');
+    let target_num = parseFloat(cleaned_str);
+    if (isNaN(target_num)) return;
+
+    const for_decimal_places = number_str.replace(/[^\d.]/g, '');
+    const decimal_places = (for_decimal_places.split('.')[1] || '').length;
+
     const number_regex = /-?\d*\.?\d+/g;
     let best_match = null;
     let min_diff = Infinity;
-
     let match;
+
     while ((match = number_regex.exec(log_html)) !== null) {
         const num_in_log_str = match[0];
         if (num_in_log_str === '.' || num_in_log_str === '-') continue;
-
         const num_in_log = parseFloat(num_in_log_str);
         if (isNaN(num_in_log)) continue;
 
@@ -102,17 +90,16 @@ function highlight_number_in_log(log_element, raw_number_str) {
         }
     }
 
+    // 4. Apply the new highlight.
     if (best_match) {
-        console.log("Found best match:", best_match[0], "at index", best_match.index);
         const original_text = best_match[0];
         const new_html = log_html.substring(0, best_match.index) +
                          '<span class="number-highlight">' + original_text + '</span>' +
                          log_html.substring(best_match.index + original_text.length);
         log_code_element.html(new_html);
-        last_highlighted_log_id = log_id; // Remember which log we modified.
+        last_highlighted_log_id = log_id;
     } else {
-        console.log("No matching number found in log #" + log_id);
-        log_code_element.html(log_html); // Restore original if no match found
+        log_code_element.html(log_html); // Restore if no match
     }
 }
 
@@ -127,10 +114,8 @@ function is_in_viewport(element) {
     if (!element) return false;
     const container = element.closest('.tab-content');
     if (!container) return false;
-
     const containerRect = container.getBoundingClientRect();
     const elementRect = element.getBoundingClientRect();
-
     return (
         elementRect.top >= containerRect.top &&
         elementRect.bottom <= containerRect.bottom
@@ -140,7 +125,6 @@ function is_in_viewport(element) {
 function apply_static_coloring(mapping) {
     clear_static_coloring();
     if (!mapping || !mapping.reg_info) return;
-
     const reg_info = mapping.reg_info;
     for (const reg_ind in reg_info) {
         if (reg_info.hasOwnProperty(reg_ind)) {
@@ -188,7 +172,6 @@ function apply_wrong_number_info(mapping) {
         const tabid = String(case_item.tabid);
         if (!wrong_cases_by_tab[tabid]) wrong_cases_by_tab[tabid] = [];
         wrong_cases_by_tab[tabid].push(case_item);
-
         const cell_element = $("#" + case_item.cell_id);
         if (cell_element.length > 0) {
             cell_element.addClass("wrong-number-cell");
@@ -207,7 +190,6 @@ function apply_wrong_number_info(mapping) {
                 report_html += `<li class="wrong-number-report-item" data-cell-id="${case_item.cell_id}" data-runid="${case_item.runid}" data-script-num="${case_item.script_num}" data-code-line="${case_item.code_line}" data-stata-number="${case_item.number_in_stata_output}">Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
             });
             report_html += '</ul></div>';
-
             const table_container = $("#tabtab" + tabid + " .art-tab-div");
             if (table_container.length > 0) {
                 table_container.append(report_html);
@@ -219,17 +201,14 @@ function apply_wrong_number_info(mapping) {
 function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
     $("#dotabs a[href='#dotab_" + script_num + "']").tab("show");
 
-    //setTimeout(function() {
+    setTimeout(function() {
         const code_id = "#L" + line_num + "___" + script_num;
         $(code_id).addClass("code-highlight");
         last_code_highlight = code_id;
 
         const targetElement = document.querySelector(code_id);
         if (targetElement && !is_in_viewport(targetElement)) {
-            console.log("Scrolling code line into view...");
             targetElement.scrollIntoView({ behavior: "smooth", block: "start" });
-        } else {
-            console.log("Code line already in view, not scrolling.");
         }
 
         if (runid_to_show && runid_to_show !== 'null') {
@@ -237,38 +216,54 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
 
             const do_log_show_and_scroll = function() {
                 const run_pre = $('#runid-' + runid_to_show);
-                if (run_pre.length > 0) {
-                    const scroll_and_highlight = function(pre_element) {
-                        if (!is_in_viewport(pre_element[0])) {
-                            console.log("Scrolling log into view...");
-                            pre_element[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        } else {
-                            console.log("Log already in view, not scrolling.");
-                        }
-                        if (typeof number_to_find !== 'undefined' && number_to_find !== null) {
-                            highlight_number_in_log(pre_element, number_to_find);
-                        }
-                    };
+                if (run_pre.length === 0) return;
 
-                    const tab_pane = run_pre.closest('.tab-pane');
-                    if (tab_pane.length > 0) {
-                         const pane_id = tab_pane.attr('id');
-                         $('a[href="#' + pane_id + '"]').one('shown.bs.tab', function() {
-                             scroll_and_highlight(run_pre);
-                         }).tab('show');
-                    } else {
-                       scroll_and_highlight(run_pre);
+                const scroll_and_highlight = function(pre_element) {
+                    if (!is_in_viewport(pre_element[0])) {
+                        pre_element[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
                     }
+                    if (typeof number_to_find !== 'undefined' && number_to_find !== null) {
+                        highlight_number_in_log(pre_element, number_to_find);
+                    }
+                };
+
+                const tab_pane = run_pre.closest('.tab-pane');
+
+                // Case 1: Log is part of a multi-run tab set inside the log container
+                if (tab_pane.length > 0) {
+                    const is_active = tab_pane.hasClass('active');
+
+                    if (is_active) {
+                        // If tab is already visible, highlight after a zero-delay timeout
+                        // to ensure the browser has processed the 'clear' from the click event.
+                        console.log("Multi-run tab already active. Highlighting in next event cycle.");
+                        setTimeout(() => scroll_and_highlight(run_pre), 0);
+                    } else {
+                        // If tab is not visible, use the Bootstrap event to highlight after it's shown.
+                        console.log("Switching to multi-run tab and highlighting on 'shown' event.");
+                        const pane_id = tab_pane.attr('id');
+                        $('a[href="#' + pane_id + '"]').one('shown.bs.tab', function() {
+                             scroll_and_highlight(run_pre);
+                        }).tab('show');
+                    }
+                }
+                // Case 2: Log is a single run (no inner tabs)
+                else {
+                    // Highlight after a zero-delay timeout.
+                    console.log("Single-run log. Highlighting in next event cycle.");
+                    setTimeout(() => scroll_and_highlight(run_pre), 0);
                 }
             };
 
+            // Main entry point for showing/scrolling logs.
+            // Check if the whole log container needs to be expanded first.
             if (log_container.hasClass('in')) {
                 do_log_show_and_scroll();
             } else {
                 log_container.one('shown.bs.collapse', do_log_show_and_scroll).collapse('show');
             }
         }
-    //}, 150);
+    }, 150);
 }
 
 function highlight_cells(tabid, cell_ids_string) {
@@ -303,14 +298,11 @@ function update_version_selector() {
 
 function update_all_cell_titles() {
     const cell_map = active_mapping ? active_mapping.cell_map : null;
-
     $("[id^=c][id*=_]").each(function() {
         const cell_id = this.id;
         let title_parts = [`cell_id: ${cell_id}`];
         let has_conflict = false;
-
         $(this).removeClass("conflict-indicator");
-
         if (cell_map && cell_map[cell_id]) {
             const info = cell_map[cell_id];
             if (info.reg_ind != null) title_parts.push(`reg_ind: ${info.reg_ind}`);
@@ -319,14 +311,11 @@ function update_all_cell_titles() {
                 title_parts.push(`script: ${info.script_file}, line: ${info.code_line}`);
             }
         }
-
         if (typeof cell_conflict_data !== 'undefined' && cell_conflict_data[cell_id]) {
             title_parts.push(cell_conflict_data[cell_id]);
             has_conflict = true;
         }
-
         $(this).attr('title', title_parts.join('\n'));
-
         if (has_conflict) {
             $(this).addClass("conflict-indicator");
         }
@@ -335,14 +324,12 @@ function update_all_cell_titles() {
 
 function handle_map_change() {
     clear_all_highlights();
-
     const apply_updates = (map_data) => {
         active_mapping = map_data || {};
         apply_static_coloring(active_mapping);
         apply_wrong_number_info(active_mapping);
         update_all_cell_titles();
     };
-
     if (data_is_embedded) {
         const map_data = all_maps[active_map_type] ? all_maps[active_map_type][active_version] : null;
         apply_updates(map_data);
@@ -352,10 +339,8 @@ function handle_map_change() {
             apply_updates(null);
             return;
         }
-
         const selectors = $("#map_type_selector, #version_selector");
         selectors.prop("disabled", true);
-
         fetch(file_path)
             .then(response => {
                 if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
@@ -377,33 +362,27 @@ $(document).ready(function() {
         $(".controls-div").hide();
         return;
     }
-
     $("#map_type_selector").on("change", function() {
         active_map_type = $(this).val();
         update_version_selector();
         $("#version_selector").trigger("change");
     });
-
     $("#version_selector").on("change", function() {
         active_version = $(this).val();
         handle_map_change();
     });
-
     $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
         console.log("--- Cell Click Event ---");
         console.log("Cell clicked:", event.currentTarget.id);
         clear_all_highlights();
-
         const cell_id = event.currentTarget.id;
         const cell_content = $(event.currentTarget).text();
-
         if (active_mapping && active_mapping.cell_to_code_idx && active_mapping.code_locations) {
             const location_idx = active_mapping.cell_to_code_idx[cell_id];
             if (typeof location_idx !== 'undefined') {
                 const location_data = active_mapping.code_locations[location_idx];
                 $(event.currentTarget).addClass("cell-highlight");
                 last_cell_highlights.push("#" + cell_id);
-
                 const runid = location_data[0];
                 const script_num = location_data[1];
                 const code_line = location_data[2];
@@ -413,17 +392,14 @@ $(document).ready(function() {
             }
         }
     });
-
     $(document).on("click", ".reg-cmd", function(event) {
         console.log("--- Reg-Cmd Click Event ---");
         clear_all_highlights();
-
         const code_el = $(event.currentTarget);
         const code_id_parts = code_el.attr("id").split("___");
         const line = code_id_parts[0].substring(1);
         const script_num = code_id_parts[1];
         const lookup_key = "s" + script_num + "_l" + line;
-
         if (active_mapping && active_mapping.code_to_cells && active_mapping.code_to_cells[lookup_key]) {
             const mapping = active_mapping.code_to_cells[lookup_key];
             code_el.addClass("code-highlight");
@@ -431,18 +407,15 @@ $(document).ready(function() {
             highlight_cells(mapping.tabid, mapping.cell_ids);
         }
     });
-
     $(document).on("click", ".wrong-number-report-item", function() {
         console.log("--- Wrong Number Report Click ---");
         clear_all_highlights();
-
         const el = $(this);
         const cell_id = el.data("cell-id");
         const runid = el.data("runid");
         const script_num = el.data("script-num");
         const code_line = el.data("code-line");
         const stata_number = el.data("stata-number");
-
         if (cell_id) {
             const cell_element = $("#" + cell_id);
             if (cell_element.length > 0) {
@@ -459,12 +432,10 @@ $(document).ready(function() {
                 }, 200);
             }
         }
-
         if (script_num && script_num !== 'null' && code_line && code_line !== 'null') {
             highlight_code(script_num, code_line, runid, stata_number);
         }
     });
-
     active_map_type = $("#map_type_selector").val();
     update_version_selector();
     $("#version_selector").trigger("change");
