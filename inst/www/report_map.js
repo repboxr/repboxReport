@@ -18,8 +18,6 @@ var original_log_htmls = {}; // Cache for pristine log HTML, keyed by the log <p
 var last_highlighted_log_id = null; // ID of the last log <pre> element that was modified.
 
 function clear_all_highlights() {
-    console.log("Clearing all highlights...");
-
     if (last_code_highlight) {
         $(last_code_highlight).removeClass("code-highlight");
         last_code_highlight = "";
@@ -37,7 +35,6 @@ function clear_all_highlights() {
         const log_code_element = $("#" + last_highlighted_log_id).find('.logtxt-code');
         if (log_code_element.length > 0) {
             log_code_element.html(original_log_htmls[last_highlighted_log_id]);
-            console.log("Restored original HTML for log #" + last_highlighted_log_id);
         }
     }
     last_highlighted_log_id = null;
@@ -236,11 +233,9 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
                     if (is_active) {
                         // If tab is already visible, highlight after a zero-delay timeout
                         // to ensure the browser has processed the 'clear' from the click event.
-                        console.log("Multi-run tab already active. Highlighting in next event cycle.");
                         setTimeout(() => scroll_and_highlight(run_pre), 0);
                     } else {
                         // If tab is not visible, use the Bootstrap event to highlight after it's shown.
-                        console.log("Switching to multi-run tab and highlighting on 'shown' event.");
                         const pane_id = tab_pane.attr('id');
                         $('a[href="#' + pane_id + '"]').one('shown.bs.tab', function() {
                              scroll_and_highlight(run_pre);
@@ -250,7 +245,6 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
                 // Case 2: Log is a single run (no inner tabs)
                 else {
                     // Highlight after a zero-delay timeout.
-                    console.log("Single-run log. Highlighting in next event cycle.");
                     setTimeout(() => scroll_and_highlight(run_pre), 0);
                 }
             };
@@ -372,8 +366,6 @@ $(document).ready(function() {
         handle_map_change();
     });
     $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
-        console.log("--- Cell Click Event ---");
-        console.log("Cell clicked:", event.currentTarget.id);
         clear_all_highlights();
         const cell_id = event.currentTarget.id;
         const cell_content = $(event.currentTarget).text();
@@ -387,13 +379,10 @@ $(document).ready(function() {
                 const script_num = location_data[1];
                 const code_line = location_data[2];
                 highlight_code(script_num, code_line, runid, cell_content);
-            } else {
-                console.log("No code location found for cell:", cell_id);
             }
         }
     });
     $(document).on("click", ".reg-cmd", function(event) {
-        console.log("--- Reg-Cmd Click Event ---");
         clear_all_highlights();
         const code_el = $(event.currentTarget);
         const code_id_parts = code_el.attr("id").split("___");
@@ -408,7 +397,6 @@ $(document).ready(function() {
         }
     });
     $(document).on("click", ".wrong-number-report-item", function() {
-        console.log("--- Wrong Number Report Click ---");
         clear_all_highlights();
         const el = $(this);
         const cell_id = el.data("cell-id");

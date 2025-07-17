@@ -1,29 +1,18 @@
-You have done an excellent job debugging this. Your detailed observations were the key to solving this issue. "Thinking freshly," as you suggested, and focusing on your specific examples reveals the true cause.
+Of course! I'm glad to hear it's working correctly now.
 
-**The Diagnosis (Your observations were spot-on):**
+You are right to ask about cleaning up. After several rounds of debugging, it's good practice to remove any experimental code and ensure the final version is as clean and efficient as possible.
 
-The problem is a timing issue related to how Bootstrap events work.
+I have reviewed the entire `report_map.js` file. The good news is that the logic we arrived at is not "leftover" or experimental; it is the lean and correct way to handle the complex timing issues of the browser. The state caching and the intelligent use of `setTimeout(..., 0)` are performance *enhancements* that prevent sluggishness by avoiding unnecessary DOM manipulation.
 
-1.  **When a *new* output is shown:** The code relies on Bootstrap events like `shown.bs.collapse` (for expanding the log) or `shown.bs.tab` (for switching run tabs). These events fire *after* an animation completes, which provides a natural delay. This delay gives the browser time to process the `clear_all_highlights` command visually before the new highlight is applied. This is why it works in this case.
+The only code that can be safely removed is all the `console.log` statements we added for debugging. They were invaluable for finding the solution, but they serve no purpose for the end-user and just add clutter to the browser console.
 
-2.  **When the output is *already* visible:** No Bootstrap event is fired. The code proceeds immediately. This creates a race condition where `clear_all_highlights()` and `highlight_number_in_log()` are executed in the same synchronous block of code. The browser tries to be efficient, batches the changes, and fails to render the final update correctly, even though the underlying HTML is correct in memory. This is why it fails in this case.
-
-**The Solution: A Robust Timing-Aware Approach**
-
-The fix is to intelligently decide *when* to apply the highlight based on whether the target is already visible.
-
-*   **If the target is already visible:** We must manually break the synchronous execution. We do this with `setTimeout(..., 0)`. This tells the browser, "Finish what you're doing, and then run this highlighting code in the very next event cycle." This gives it the "hiccup" it needs to render the cleared state before applying the new one.
-*   **If the target is hidden:** We continue to use the reliable Bootstrap events, which handle the timing for us.
-
-I have completely rewritten the `highlight_code` function to implement this robust logic. The other functions are now simplified as they no longer need to contain complex timing hacks themselves. This is a cleaner and more correct solution.
-
-Please replace the entire `inst/www/report_map.js` file with the following code.
+I will provide a final, clean version of `report_map.js` with all debugging messages removed. The underlying logic remains the same as it is now robust and efficient.
 
 !MODIFICATION report_map.js
 scope = "file"
 file = "inst/www/report_map.js"
 is_new_file = false
-description = '''This definitive fix correctly handles the browser rendering race condition by intelligently using `setTimeout(..., 0)` only when the target log output is already visible. This ensures a repaint occurs after clearing a highlight and before applying a new one, solving the issue for all cases, including single-run logs and already-active tabs in multi-run logs.'''
+description = '''This is a final cleanup of the JavaScript file. All debugging `console.log` statements have been removed. The core logic, which is now robust and efficient, remains unchanged.'''
 ---
 ```javascript
 // FILE: report_map.js
@@ -46,8 +35,6 @@ var original_log_htmls = {}; // Cache for pristine log HTML, keyed by the log <p
 var last_highlighted_log_id = null; // ID of the last log <pre> element that was modified.
 
 function clear_all_highlights() {
-    console.log("Clearing all highlights...");
-
     if (last_code_highlight) {
         $(last_code_highlight).removeClass("code-highlight");
         last_code_highlight = "";
@@ -65,7 +52,6 @@ function clear_all_highlights() {
         const log_code_element = $("#" + last_highlighted_log_id).find('.logtxt-code');
         if (log_code_element.length > 0) {
             log_code_element.html(original_log_htmls[last_highlighted_log_id]);
-            console.log("Restored original HTML for log #" + last_highlighted_log_id);
         }
     }
     last_highlighted_log_id = null;
@@ -264,11 +250,9 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
                     if (is_active) {
                         // If tab is already visible, highlight after a zero-delay timeout
                         // to ensure the browser has processed the 'clear' from the click event.
-                        console.log("Multi-run tab already active. Highlighting in next event cycle.");
                         setTimeout(() => scroll_and_highlight(run_pre), 0);
                     } else {
                         // If tab is not visible, use the Bootstrap event to highlight after it's shown.
-                        console.log("Switching to multi-run tab and highlighting on 'shown' event.");
                         const pane_id = tab_pane.attr('id');
                         $('a[href="#' + pane_id + '"]').one('shown.bs.tab', function() {
                              scroll_and_highlight(run_pre);
@@ -278,7 +262,6 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
                 // Case 2: Log is a single run (no inner tabs)
                 else {
                     // Highlight after a zero-delay timeout.
-                    console.log("Single-run log. Highlighting in next event cycle.");
                     setTimeout(() => scroll_and_highlight(run_pre), 0);
                 }
             };
@@ -400,8 +383,6 @@ $(document).ready(function() {
         handle_map_change();
     });
     $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
-        console.log("--- Cell Click Event ---");
-        console.log("Cell clicked:", event.currentTarget.id);
         clear_all_highlights();
         const cell_id = event.currentTarget.id;
         const cell_content = $(event.currentTarget).text();
@@ -415,13 +396,10 @@ $(document).ready(function() {
                 const script_num = location_data[1];
                 const code_line = location_data[2];
                 highlight_code(script_num, code_line, runid, cell_content);
-            } else {
-                console.log("No code location found for cell:", cell_id);
             }
         }
     });
     $(document).on("click", ".reg-cmd", function(event) {
-        console.log("--- Reg-Cmd Click Event ---");
         clear_all_highlights();
         const code_el = $(event.currentTarget);
         const code_id_parts = code_el.attr("id").split("___");
@@ -436,7 +414,6 @@ $(document).ready(function() {
         }
     });
     $(document).on("click", ".wrong-number-report-item", function() {
-        console.log("--- Wrong Number Report Click ---");
         clear_all_highlights();
         const el = $(this);
         const cell_id = el.data("cell-id");
