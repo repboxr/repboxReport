@@ -4,6 +4,8 @@ project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
 schema_dir = "/home/rstudio/repbox/gemini/repboxAI/inst/prod_schemas"
 report_dir = "~/repbox/projects_gha_new/aejapp_10_4_6/reports"
 repboxHtml_dir = "/home/rstudio/repbox/repboxHtml"
+repboxMapreg_dir = "/home/rstudio/repbox/repboxMapreg"
+
 
 include_files = '''
 
@@ -55,6 +57,15 @@ but used an older data structure. But design etc may be helpful.
 
 {{mod_instruct}}
 
+####################################################
+# From repboxRegmap
+# Example report Rds file: rme.RDS and markdown report
+# Code from repboxRegmap to make markdown report
+####################################################
+
+{{map_reg}}
+
+
 ##################################
 # Coding Style
 ##################################
@@ -95,6 +106,15 @@ include_files = '''
 {{project_dir}}/repdb/stata_cmd.Rds
 {{project_dir}}/repdb/stata_run_log.Rds
 '''
+
+[[map_reg]]
+
+include_files = '''
+{{project_dir}}/fp/eval_art/rme.Rds
+{{project_dir}}/fp/eval_art/rme_report.md
+{{repboxRegmap_dir}}/R/rme_report.R
+'''
+
 
 group_template = '''
 ################################################
