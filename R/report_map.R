@@ -83,7 +83,7 @@ rr_map_report <- function(project_dir,
   }
 
   # --- 2. Load data ---
-  message("Loading data...")
+  cat("\nLoading data...")
   parcels <- repboxDB::repdb_load_parcels(project_dir, c("stata_source", "stata_run_cmd", "stata_run_log", "stata_cmd"))
 
   fp_dir <- file.path(project_dir, "fp", paste0("prod_", doc_type))
@@ -93,7 +93,7 @@ rr_map_report <- function(project_dir,
   }
   tab_main <- fp_load_prod_df(tab_main_info$ver_dir)
 
-  message("Loading maps...")
+  cat("\nLoading maps...")
   all_map_types <- list()
   prod_id = "map_reg_run"
   for (prod_id in opts$map_prod_ids) {
@@ -108,14 +108,14 @@ rr_map_report <- function(project_dir,
 
   # Standardize reg_ind across all map types
   if (length(all_map_types) > 0) {
-      message("Standardizing regression indices...")
+      cat("\nStandardizing regression indices...")
       # source("R/standardize_reg_ind.R") # This line would be used to load the function
       all_map_types <- rr_standardize_reg_ind(all_map_types)
   }
 
 
   # --- 3. Generate HTML & JS components ---
-  message("Generating HTML components...")
+  cat("\nGenerating HTML components...")
 
   # Pre-compute conflict information for tooltips.
   # A conflict exists if a cell_id maps to different script/line combinations
@@ -242,7 +242,7 @@ rr_map_report <- function(project_dir,
   controls_html <- rr_make_controls_html(all_map_types)
 
   # --- 4. Write JS and CSS assets ---
-  message("Writing JS and CSS assets...")
+  cat("\nWriting JS and CSS assets...")
   rr_copy_pkg_assets(output_dir)
 
   # --- 5. Generate JS data and Assemble final HTML report ---
@@ -252,7 +252,7 @@ rr_map_report <- function(project_dir,
   js_manifest_data <- "{}"
 
   if (isTRUE(opts$embed_data)) {
-    message("Generating and embedding map data...")
+    cat("\nGenerating and embedding map data...")
     processed_types <- purrr::map(all_map_types, function(map_list_for_type) {
         purrr::map(map_list_for_type, function(map_df) {
             rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
@@ -260,7 +260,7 @@ rr_map_report <- function(project_dir,
     })
     js_maps_data <- jsonlite::toJSON(processed_types, auto_unbox = TRUE, null = "null", na = "null")
   } else {
-    message("Generating external JSON files for map data...")
+    cat("\nGenerating external JSON files for map data...")
     maps_data_dir <- file.path(output_dir, "maps_data")
     if (!dir.exists(maps_data_dir)) dir.create(maps_data_dir, recursive = TRUE)
 
@@ -281,8 +281,8 @@ rr_map_report <- function(project_dir,
         }
     }
     js_manifest_data <- jsonlite::toJSON(manifest, auto_unbox = TRUE)
-    message("\nExternal JSONs generated. Note: This report must now be viewed via a web server.")
-    message("You can start one from R with: servr::httd('", normalizePath(output_dir, mustWork=FALSE), "')")
+    cat("\n\nExternal JSONs generated. Note: This report must now be viewed via a web server.")
+    cat("\nYou can start one from R with: servr::httd('", normalizePath(output_dir, mustWork=FALSE), "')")
   }
 
   # --- 5b. Process and generate evaluation data from rme.Rds ---
@@ -292,20 +292,20 @@ rr_map_report <- function(project_dir,
 
   processed_eval_data <- NULL
   if (file.exists(rme_file)) {
-      message("Loading and processing evaluation data from rme.Rds...")
+      cat("\nLoading and processing evaluation data from rme.Rds...")
       tryCatch({
           rme <- readRDS(rme_file)
           processed_eval_data <- rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source)
           if (!is.null(processed_eval_data) && length(processed_eval_data) > 0) {
-            message("Successfully processed evaluation data.")
+            cat("\nSuccessfully processed evaluation data.")
           } else {
-            message("Evaluation data found, but no applicable issues to report after processing.")
+            cat("\nEvaluation data found, but no applicable issues to report after processing.")
           }
       }, error = function(e) {
           warning("Could not load or process rme.Rds: ", e$message)
       })
     } else {
-      message("No evaluation data file (rme.Rds) found, skipping.")
+      cat("\nNo evaluation data file (rme.Rds) found, skipping.")
   }
 
   if (!is.null(processed_eval_data)) {
@@ -331,7 +331,7 @@ rr_map_report <- function(project_dir,
   }
 
 
-  message("Assembling final HTML report...")
+  cat("\nAssembling final HTML report...")
   html_content <- htmltools::tagList(
     htmltools::tags$head(
       htmltools::tags$meta(charset = "UTF-8"),
@@ -442,16 +442,20 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
 
         # If df has reg_ind but no runid, try to get runid from maps
         if (!"runid" %in% names(df) && "reg_ind" %in% names(df) && !is.null(reg_ind_to_runid_lookup)) {
-            # reg_ind in maps is integer after standardization
             df$reg_ind <- as.integer(df$reg_ind)
             df <- dplyr::left_join(df, reg_ind_to_runid_lookup, by = c("map_version" = "map_version_id", "tabid", "reg_ind"))
         }
 
-        # If df now has runid, join with ground truth to get code location
+        # If df now has runid, join with ground truth to get code location.
+        # This join will not filter out rows if runid is NA, which is what we want.
         if ("runid" %in% names(df) && !is.null(runid_to_code_lookup)) {
             df <- df %>%
-                dplyr::filter(!is.na(runid)) %>%
                 dplyr::left_join(runid_to_code_lookup, by = "runid")
+        }
+
+        # Standardize cellids: if only cellid exists, copy it to cellids for the JS
+        if ("cellid" %in% names(df) && !"cellids" %in% names(df)) {
+            df$cellids <- df$cellid
         }
 
         # Convert all columns to character to avoid JSON issues
@@ -482,7 +486,6 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
     }
     return(processed_evals)
 }
-
 
 #' @noRd
 #' @description Robustly adds script_num to a map data frame by joining on
