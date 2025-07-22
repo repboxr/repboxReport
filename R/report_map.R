@@ -398,19 +398,24 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
         consistent_vertical_structure = "Inconsistent Summary Stat Rows: Checks for consistent table structure by flagging summary statistics (e.g., 'Observations') that appear on different row numbers across columns of a single table."
     )
 
-    # Create a master lookup table from all maps for code location info
-    all_maps_flat_df <- purrr::map_dfr(unlist(all_map_types, recursive = FALSE), ~ if(!is.null(.x) && nrow(.x)>0) .x else NULL, .id = "map_version_id")
-
-    master_lookup_df <- NULL
-    if (nrow(all_maps_flat_df) > 0) {
-        all_maps_with_num <- rr_robust_script_num_join(all_maps_flat_df, stata_source)
-        # Select relevant columns for lookup. runid is key.
-        master_lookup_df <- all_maps_with_num %>%
-            dplyr::select(map_version_id, tabid, reg_ind, runid, script_num, code_line) %>%
-            dplyr::filter(!is.na(runid) | !is.na(reg_ind)) %>%
-            dplyr::distinct()
+    # 1. Create robust lookup from runid to code location from rme$run_df (ground truth)
+    runid_to_code_lookup <- NULL
+    if ("run_df" %in% names(rme) && !is.null(rme$run_df)) {
+        runid_to_code_lookup <- rme$run_df %>%
+            dplyr::select(runid, script_num, code_line) %>%
+            dplyr::filter(!is.na(runid)) %>%
+            dplyr::distinct(runid, .keep_all = TRUE)
     }
 
+    # 2. Create lookup from map info to get runid for tests that don't have it
+    all_maps_flat_df <- purrr::map_dfr(unlist(all_map_types, recursive = FALSE), ~ if(!is.null(.x) && nrow(.x)>0) .x else NULL, .id = "map_version_id")
+    reg_ind_to_runid_lookup <- NULL
+    if (nrow(all_maps_flat_df) > 0) {
+        reg_ind_to_runid_lookup <- all_maps_flat_df %>%
+            dplyr::select(map_version_id, tabid, reg_ind, runid) %>%
+            dplyr::filter(!is.na(reg_ind), !is.na(runid)) %>%
+            dplyr::distinct()
+    }
 
     processed_evals <- list()
     eval_tests <- rme$evals[sapply(rme$evals, function(x) !is.null(x) && NROW(x) > 0)]
@@ -421,44 +426,35 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
 
         if (!"map_version" %in% names(df)) next
 
-        # FIX: Directly use map_version as the version ID. The old regex was incorrect.
         df$ver_id <- df$map_version
         df <- dplyr::filter(df, !is.na(ver_id))
         if(nrow(df) == 0) next
 
-        # Add code location info if possible, to enable click-to-code
-        if (!is.null(master_lookup_df)) {
-            # Standardize runid column if it's named 'runids' (as in 'runids_differ' test)
-            if ("runids" %in% names(df) && !"runid" %in% names(df)) {
-                df <- df %>% dplyr::rename(runid = runids)
-            }
-            # Ensure runid is integer for joining
-            if ("runid" %in% names(df) && !is.integer(df$runid)) {
-                df$runid <- suppressWarnings(as.integer(df$runid))
-                df <- dplyr::filter(df, !is.na(runid))
-            }
-            if (nrow(df) == 0) next
-
-            # Join strategy:
-            # 1. If df has runid, join to get script_num/code_line.
-            # 2. If df has reg_ind but no runid, join to get runid and script_num/code_line.
-            if ("runid" %in% names(df)) {
-                lookup <- master_lookup_df %>%
-                    dplyr::select(runid, script_num, code_line) %>%
-                    dplyr::filter(!is.na(runid)) %>%
-                    dplyr::distinct(runid, .keep_all = TRUE)
-                df <- dplyr::left_join(df, lookup, by = "runid")
-            } else if ("reg_ind" %in% names(df)) {
-                 lookup <- master_lookup_df %>%
-                    dplyr::select(map_version_id, tabid, reg_ind, runid, script_num, code_line) %>%
-                    dplyr::filter(!is.na(reg_ind)) %>%
-                    dplyr::distinct(map_version_id, tabid, reg_ind, .keep_all = TRUE)
-                df <- dplyr::left_join(df, lookup, by = c("map_version" = "map_version_id", "tabid", "reg_ind"))
-            }
+        # Standardize runid column if it's named 'runids'
+        if ("runids" %in% names(df) && !"runid" %in% names(df)) {
+             df <- df %>% dplyr::rename(runid = runids)
         }
 
-        # Convert all columns to character to avoid issues with mixed types in JSON
-        # except for list columns which purrr::transpose will handle.
+        # Ensure runid is numeric for joining
+        if ("runid" %in% names(df) && !is.numeric(df$runid)) {
+            df$runid <- suppressWarnings(as.numeric(as.character(df$runid)))
+        }
+
+        # If df has reg_ind but no runid, try to get runid from maps
+        if (!"runid" %in% names(df) && "reg_ind" %in% names(df) && !is.null(reg_ind_to_runid_lookup)) {
+            # reg_ind in maps is integer after standardization
+            df$reg_ind <- as.integer(df$reg_ind)
+            df <- dplyr::left_join(df, reg_ind_to_runid_lookup, by = c("map_version" = "map_version_id", "tabid", "reg_ind"))
+        }
+
+        # If df now has runid, join with ground truth to get code location
+        if ("runid" %in% names(df) && !is.null(runid_to_code_lookup)) {
+            df <- df %>%
+                dplyr::filter(!is.na(runid)) %>%
+                dplyr::left_join(runid_to_code_lookup, by = "runid")
+        }
+
+        # Convert all columns to character to avoid JSON issues
         is_list_col <- sapply(df, is.list)
         df[!is_list_col] <- lapply(df[!is_list_col], as.character)
 
@@ -475,7 +471,6 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
                 issue_df <- df_split_tab[[tabid]]
                 cols_to_keep <- setdiff(names(issue_df), c("map_version", "ver_id", "tabid"))
 
-                # purrr::transpose converts a data frame to a list of rows (records)
                 records <- purrr::transpose(issue_df[, cols_to_keep, drop = FALSE])
 
                 processed_evals[[ver_id]][[tabid]][[test_name]] <- list(
@@ -487,6 +482,7 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
     }
     return(processed_evals)
 }
+
 
 #' @noRd
 #' @description Robustly adds script_num to a map data frame by joining on
@@ -676,6 +672,7 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
       cell_map = cell_map
     )
 }
+
 #' @describeIn rr_map_report Load all available versions of a given product.
 rr_load_all_map_versions <- function(project_dir, doc_type, prod_id) {
   restore.point("rr_load_all_map_versions")
@@ -688,13 +685,18 @@ rr_load_all_map_versions <- function(project_dir, doc_type, prod_id) {
   if (length(ver_dirs) == 0) return(list())
 
   df_list <- lapply(ver_dirs, function(ver_dir) {
-    ver_id = fp_ver_dir_to_proc_id(ver_dir)
     df = fp_load_prod_df(ver_dir)
     df
   })
-  ind_df = fp_ver_dir_to_ids(ver_dirs) %>%
-    mutate(name = ifelse(ver_ind >0, ver_id, proc_id))
-  names(df_list) = ind_df$name
+
+  # The old logic shortened names for v0 versions (e.g., 'model--v0' became 'model'),
+  # which created an inconsistency with how evaluation data is keyed.
+  # We will always use the full ver_id as the name.
+  ind_df = fp_ver_dir_to_ids(ver_dirs)
+  if (length(df_list) > 0 && !is.null(ind_df) && nrow(ind_df) == length(df_list)) {
+    names(df_list) = ind_df$ver_id
+  }
+
   df_list
 
 }

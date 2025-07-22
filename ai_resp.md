@@ -1,14 +1,21 @@
-Of course. It appears the core issue was a version naming mismatch: the logic for loading maps was shortening version names ending in `--v0`, while the evaluation data (`rme.Rds`) used the full, uns-shortened names. This prevented the evaluation results for those versions from ever being found and displayed.
+You are right to point out that evaluation tests present in the markdown report were missing from the interactive HTML report.
 
-I have corrected this by ensuring the full version ID is always used as the key for the map data. I've also rewritten the function that processes the `rme.Rds` file to be more robust and to correctly link evaluation issues to the corresponding code locations. Finally, I've improved the console messages to provide clearer feedback during the report generation process.
+The root cause was an overly aggressive filtering step within the R function `rr_process_eval_data`. This function is responsible for preparing the evaluation data from `rme.Rds` for the web report. It was incorrectly discarding any evaluation issue for which it could not find a corresponding `runid` (a link to a specific code execution). Tests like `single_col_reg` or `invalid_cellids` are defined by table structure (`reg_ind`) and don't always have a direct `runid`, causing them to be filtered out.
 
-Here are the required modifications:
+I have rewritten `rr_process_eval_data` to be more robust. The new version will:
+1.  Correctly process all evaluation tests from `rme.Rds`.
+2.  Intelligently add code location information (`script_num`, `code_line`) where possible, to enable the "click-to-code" feature.
+3.  **Crucially, it will no longer discard issues that cannot be linked to a specific line of code.** These issues will now appear in the report, although the "jump to code" functionality will be disabled for them, which is the correct behavior.
+
+This change ensures that all relevant findings from the evaluation are displayed in the interactive report, matching the completeness of the markdown summary.
+
+Here is the modification for `R/report_map.R`:
 
 !MODIFICATION rr_process_eval_data in R/report_map.R
 scope = "function"
 file = "R/report_map.R"
 function_name = "rr_process_eval_data"
-description = '''Rewrite `rr_process_eval_data` to be more robust. It now uses the ground-truth `rme$run_df` to link `runid` to code locations, correctly parses full version IDs without shortening them, and can resolve `runid` for tests that only provide a `reg_ind` by looking it up in the loaded map data. This is critical for making the evaluation report interactive.'''
+description = '''Rewrite `rr_process_eval_data` to correctly process and include all evaluation tests from `rme.Rds` in the final report. The new logic robustly links issues to code locations without incorrectly filtering out valid issues that lack a direct `runid`.'''
 ---
 ```r
 #' Process rme$evals data for the report
@@ -70,7 +77,7 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
         if ("runids" %in% names(df) && !"runid" %in% names(df)) {
              df <- df %>% dplyr::rename(runid = runids)
         }
-        
+
         # Ensure runid is numeric for joining
         if ("runid" %in% names(df) && !is.numeric(df$runid)) {
             df$runid <- suppressWarnings(as.numeric(as.character(df$runid)))
@@ -78,16 +85,20 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
 
         # If df has reg_ind but no runid, try to get runid from maps
         if (!"runid" %in% names(df) && "reg_ind" %in% names(df) && !is.null(reg_ind_to_runid_lookup)) {
-            # reg_ind in maps is integer after standardization
             df$reg_ind <- as.integer(df$reg_ind)
             df <- dplyr::left_join(df, reg_ind_to_runid_lookup, by = c("map_version" = "map_version_id", "tabid", "reg_ind"))
         }
 
-        # If df now has runid, join with ground truth to get code location
+        # If df now has runid, join with ground truth to get code location.
+        # This join will not filter out rows if runid is NA, which is what we want.
         if ("runid" %in% names(df) && !is.null(runid_to_code_lookup)) {
             df <- df %>%
-                dplyr::filter(!is.na(runid)) %>%
                 dplyr::left_join(runid_to_code_lookup, by = "runid")
+        }
+
+        # Standardize cellids: if only cellid exists, copy it to cellids for the JS
+        if ("cellid" %in% names(df) && !"cellids" %in% names(df)) {
+            df$cellids <- df$cellid
         }
 
         # Convert all columns to character to avoid JSON issues
@@ -120,77 +131,3 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
 }
 ```
 !END_MODIFICATION rr_process_eval_data in R/report_map.R
-
-!MODIFICATION rme loading in rr_map_report in R/report_map.R
-scope = "lines"
-file = "R/report_map.R"
-replace_lines = '''  if (file.exists(rme_file)) {
-      message("Loading and processing evaluation data from rme.Rds...")
-      tryCatch({
-          rme <- readRDS(rme_file)
-          processed_eval_data <- rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source)
-      }, error = function(e) {
-          warning("Could not load or process rme.Rds: ", e$message)
-      })
-  } else {
-      message("No evaluation data file (rme.Rds) found, skipping.")
-  }'''
-description = '''Improve the console messages when loading and processing `rme.Rds` to give clearer feedback on whether evaluation data was found, processed successfully, or resulted in no reportable issues.'''
----
-```r
-  if (file.exists(rme_file)) {
-      message("Loading and processing evaluation data from rme.Rds...")
-      tryCatch({
-          rme <- readRDS(rme_file)
-          processed_eval_data <- rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source)
-          if (!is.null(processed_eval_data) && length(processed_eval_data) > 0) {
-            message("Successfully processed evaluation data.")
-          } else {
-            message("Evaluation data found, but no applicable issues to report after processing.")
-          }
-      }, error = function(e) {
-          warning("Could not load or process rme.Rds: ", e$message)
-          processed_eval_data <- NULL
-      })
-  } else {
-      message("No evaluation data file (rme.Rds) found, skipping.")
-  }
-```
-!END_MODIFICATION rme loading in rr_map_report in R/report_map.R
-
-!MODIFICATION rr_load_all_map_versions in R/report_map.R
-scope = "function"
-file = "R/report_map.R"
-function_name = "rr_load_all_map_versions"
-description = '''Update `rr_load_all_map_versions` to always use the full version ID (`ver_id`) as the name for map versions. This prevents the shortening of names for versions ending in '--v0', ensuring consistency with evaluation data keys and fixing a bug where evaluation results would not be displayed for these versions.'''
----
-```r
-#' @describeIn rr_map_report Load all available versions of a given product.
-rr_load_all_map_versions <- function(project_dir, doc_type, prod_id) {
-  restore.point("rr_load_all_map_versions")
-  fp_dir <- file.path(project_dir, "fp", paste0("prod_", doc_type))
-  prod_path <- file.path(fp_dir, prod_id)
-  if (!dir.exists(prod_path)) return(list())
-
-
-  ver_dirs = fp_all_ok_ver_dirs(fp_dir,prod_id = prod_id)
-  if (length(ver_dirs) == 0) return(list())
-
-  df_list <- lapply(ver_dirs, function(ver_dir) {
-    df = fp_load_prod_df(ver_dir)
-    df
-  })
-  
-  # The old logic shortened names for v0 versions (e.g., 'model--v0' became 'model'),
-  # which created an inconsistency with how evaluation data is keyed.
-  # We will always use the full ver_id as the name.
-  ind_df = fp_ver_dir_to_ids(ver_dirs)
-  if (length(df_list) > 0 && !is.null(ind_df) && nrow(ind_df) == length(df_list)) {
-    names(df_list) = ind_df$ver_id
-  }
-  
-  df_list
-
-}
-```
-!END_MODIFICATION rr_load_all_map_versions in R/report_map.R
