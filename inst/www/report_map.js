@@ -5,10 +5,13 @@
 // var all_maps = { ... }; // Populated if data_is_embedded is true
 // var report_manifest = { ... }; // Populated if data_is_embedded is false
 // var cell_conflict_data = { ... }; // Populated with pre-computed conflict info
+// var all_evals = {}; // Populated with evaluation data if embedded
+// var eval_manifest = {}; // Populated with paths to evaluation data if external
 
 var active_map_type = "";
 var active_version = "";
 var active_mapping = {};
+var active_eval_data = null;
 
 var last_code_highlight = "";
 var last_cell_highlights = [];
@@ -29,6 +32,8 @@ function clear_all_highlights() {
     last_cell_highlights = [];
 
     $(".wrong-number-report-highlight").removeClass("wrong-number-report-highlight");
+    // Clear highlights from eval items
+    $(".eval-issue-item.cell-highlight").removeClass("cell-highlight");
 
     // Only restore the last modified log. The new highlight function will handle its own state.
     if (last_highlighted_log_id && original_log_htmls[last_highlighted_log_id]) {
@@ -260,7 +265,7 @@ function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
     }, 150);
 }
 
-function highlight_cells(tabid, cell_ids_string) {
+function highlight_cells(tabid, cell_ids_string, use_red_outline = false) {
     if (!tabid || !cell_ids_string) return;
     $("#tabtabs a[href='#tabtab" + tabid + "']").tab("show");
 
@@ -269,6 +274,9 @@ function highlight_cells(tabid, cell_ids_string) {
         cell_ids.forEach(id => {
             const cell_selector = "#" + id.trim();
             $(cell_selector).addClass("cell-highlight");
+            if (use_red_outline) {
+                $(cell_selector).addClass("wrong-number-report-highlight");
+            }
             last_cell_highlights.push(cell_selector);
         });
         if (cell_ids.length > 0) {
@@ -316,14 +324,144 @@ function update_all_cell_titles() {
     });
 }
 
+// --- Evaluation Report Functions ---
+
+function clear_eval_reports() {
+    $(".eval-report-container").remove();
+    active_eval_data = null;
+}
+
+function load_and_display_eval_data(version_id) {
+    if (!version_id) {
+        clear_eval_reports();
+        return;
+    }
+
+    const render = (data) => {
+        active_eval_data = data;
+        if (active_eval_data) {
+            render_eval_reports(active_eval_data);
+        }
+    };
+
+    if (data_is_embedded) {
+        render(typeof all_evals !== 'undefined' ? all_evals[version_id] : null);
+    } else {
+        const eval_file_path = typeof eval_manifest !== 'undefined' ? eval_manifest[version_id] : null;
+        if (!eval_file_path) {
+            clear_eval_reports();
+            return;
+        }
+        fetch(eval_file_path)
+            .then(response => {
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                return response.json();
+            })
+            .then(data => render(data))
+            .catch(error => {
+                console.warn(`Could not load evaluation data for version ${version_id} from ${eval_file_path}:`, error);
+                clear_eval_reports();
+            });
+    }
+}
+
+function render_eval_reports(eval_data_for_version) {
+    for (const tabid in eval_data_for_version) {
+        const table_container = $("#tabtab" + tabid + " .art-tab-div");
+        if (table_container.length === 0) continue;
+
+        const tab_eval_data = eval_data_for_version[tabid];
+        const accordion_id = `eval-accordion-${tabid}`;
+        let accordion_html = `<div class="panel-group eval-report-container" id="${accordion_id}" role="tablist" aria-multiselectable="true">`;
+        let test_counter = 0;
+
+        for (const test_name in tab_eval_data) {
+            const test_data = tab_eval_data[test_name];
+            const issues = test_data.issues;
+            if (!issues || issues.length === 0) continue;
+
+            const panel_id = `eval-panel-${tabid}-${test_counter}`;
+            const collapse_id = `eval-collapse-${tabid}-${test_counter}`;
+
+            accordion_html += `
+            <div class="panel panel-default">
+                <div class="panel-heading" role="tab" id="${panel_id}-heading">
+                    <h4 class="panel-title">
+                        <a role="button" data-toggle="collapse" data-parent="#${accordion_id}" href="#${collapse_id}" aria-expanded="false" aria-controls="${collapse_id}">
+                            Test: ${test_name} <span class="badge">${issues.length}</span>
+                        </a>
+                    </h4>
+                </div>
+                <div id="${collapse_id}" class="panel-collapse collapse" role="tabpanel" aria-labelledby="${panel_id}-heading">
+                    <div class="panel-body">
+                        <p class="eval-description">${test_data.description || ''}</p>
+                        ${format_issues_html(test_name, issues)}
+                    </div>
+                </div>
+            </div>`;
+            test_counter++;
+        }
+        accordion_html += `</div>`;
+        if (test_counter > 0) {
+            table_container.append('<h5>Mapping Evaluation Results</h5>' + accordion_html);
+        }
+    }
+}
+
+function format_issues_html(test_name, issues) {
+    const custom_formatters = {
+        "invalid_cellids": (issue) => `<strong>Reg. ${issue.reg_ind}</strong>: Affects cells <code>${issue.cellids}</code>`,
+        "single_col_reg": (issue) => `<strong>Reg. ${issue.reg_ind}</strong>: Affects cells <code>${issue.cellids}</code>`,
+        "multicol_reg_plausibility": (issue) => `<strong>Reg. ${issue.reg_ind}</strong>: Implausible structure for columns <code>${issue.cols}</code>. (Cells: <code>${issue.cellids}</code>)`
+    };
+
+    if (custom_formatters[test_name]) {
+        let list_html = '<ul>';
+        issues.forEach((issue, index) => {
+            list_html += `<li class="eval-issue-item" data-test="${test_name}" data-index="${index}">${custom_formatters[test_name](issue)}</li>`;
+        });
+        return list_html + '</ul>';
+    }
+
+    // Default to a table
+    const headers = Object.keys(issues[0] || {});
+    const ignore_cols = ['script_num', 'code_line', 'wrong_number_in_cell', 'number_in_stata_output', 'details', 'partner_cellid'];
+    const display_headers = headers.filter(h => !ignore_cols.includes(h));
+
+    let table_html = '<div class="table-responsive"><table class="table table-condensed table-bordered eval-issue-table"><thead><tr>';
+    display_headers.forEach(h => table_html += `<th>${h}</th>`);
+    table_html += '</tr></thead><tbody>';
+
+    issues.forEach((issue, index) => {
+        table_html += `<tr class="eval-issue-item" data-test="${test_name}" data-index="${index}">`;
+        display_headers.forEach(h => {
+            let val = issue[h];
+            if(val === null || typeof val === 'undefined') val = '';
+            if (typeof val === 'number') val = Number(val.toPrecision(4));
+            // Add title for long content like 'details'
+            let title = (h === 'issue' && issue.details) ? `title="${issue.details}"` : '';
+            table_html += `<td ${title}>${val}</td>`;
+        });
+        table_html += '</tr>';
+    });
+
+    return table_html + '</tbody></table></div>';
+}
+
+// --- Main Event Handling ---
+
 function handle_map_change() {
     clear_all_highlights();
+    clear_eval_reports();
+
     const apply_updates = (map_data) => {
         active_mapping = map_data || {};
         apply_static_coloring(active_mapping);
         apply_wrong_number_info(active_mapping);
         update_all_cell_titles();
+        load_and_display_eval_data(active_version);
     };
+
     if (data_is_embedded) {
         const map_data = all_maps[active_map_type] ? all_maps[active_map_type][active_version] : null;
         apply_updates(map_data);
@@ -373,8 +511,7 @@ $(document).ready(function() {
             const location_idx = active_mapping.cell_to_code_idx[cell_id];
             if (typeof location_idx !== 'undefined') {
                 const location_data = active_mapping.code_locations[location_idx];
-                $(event.currentTarget).addClass("cell-highlight");
-                last_cell_highlights.push("#" + cell_id);
+                highlight_cells(null, cell_id);
                 const runid = location_data[0];
                 const script_num = location_data[1];
                 const code_line = location_data[2];
@@ -404,24 +541,38 @@ $(document).ready(function() {
         const script_num = el.data("script-num");
         const code_line = el.data("code-line");
         const stata_number = el.data("stata-number");
+
         if (cell_id) {
-            const cell_element = $("#" + cell_id);
-            if (cell_element.length > 0) {
-                const tab_pane = cell_element.closest('.tab-pane[id^=tabtab]');
-                if (tab_pane.length > 0) {
-                    const tab_id = tab_pane.attr('id');
-                    $('#tabtabs a[href="#' + tab_id + '"]').tab('show');
-                }
-                setTimeout(function() {
-                    cell_element[0].scrollIntoView({ behavior: "smooth", block: "center" });
-                    cell_element.addClass("wrong-number-report-highlight");
-                    cell_element.addClass("cell-highlight");
-                    last_cell_highlights.push("#" + cell_id);
-                }, 200);
-            }
+            const tab_pane_id = $("#" + cell_id).closest('.tab-pane[id^=tabtab]').attr('id');
+            highlight_cells(tab_pane_id.replace('tabtab',''), cell_id, true);
         }
         if (script_num && script_num !== 'null' && code_line && code_line !== 'null') {
             highlight_code(script_num, code_line, runid, stata_number);
+        }
+    });
+    $(document).on("click", ".eval-issue-item", function() {
+        clear_all_highlights();
+        const el = $(this);
+        el.addClass('cell-highlight');
+
+        const test_name = el.data("test");
+        const index = el.data("index");
+        const tabid = el.closest(".art-tab-div").parent().attr("id").replace("tabtab", "");
+        if (!active_eval_data || !active_eval_data[tabid] || !active_eval_data[tabid][test_name]) return;
+        const issue = active_eval_data[tabid][test_name].issues[index];
+
+        const cellids_str = issue.cellids || issue.cellid || '';
+        const runid = issue.runid;
+        const script_num = issue.script_num;
+        const code_line = issue.code_line;
+        const stata_number = issue.number_in_stata_output || issue.closest_reg_val;
+
+        if (cellids_str) {
+            highlight_cells(tabid, cellids_str, true);
+        }
+
+        if (script_num && code_line) {
+             highlight_code(script_num, code_line, runid, stata_number);
         }
     });
     active_map_type = $("#map_type_selector").val();

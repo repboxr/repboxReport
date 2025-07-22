@@ -4,7 +4,7 @@ project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
 schema_dir = "/home/rstudio/repbox/gemini/repboxAI/inst/prod_schemas"
 report_dir = "~/repbox/projects_gha_new/aejapp_10_4_6/reports"
 repboxHtml_dir = "/home/rstudio/repbox/repboxHtml"
-repboxMapreg_dir = "/home/rstudio/repbox/repboxMapreg"
+repboxRegmap_dir = "/home/rstudio/repbox/repboxRegmap"
 
 
 include_files = '''

@@ -216,3 +216,64 @@ body {
     text-decoration: underline;
     color: #337ab7;
 }
+
+/* Evaluation Report Styles */
+.eval-report-container {
+    margin-top: 20px;
+    border-top: 2px solid #337ab7; /* Bootstrap primary color */
+    padding-top: 10px;
+    white-space: normal;
+    text-align: left;
+}
+.eval-report-container h5 {
+    font-size: 16px;
+    font-weight: bold;
+    color: #337ab7;
+    margin-top: 0;
+    margin-bottom: 10px;
+}
+.eval-report-container .panel-group .panel {
+    border-radius: 0;
+    border-color: #ddd;
+}
+.eval-report-container .panel-heading {
+    padding: 5px 10px;
+    background-color: #f5f5f5 !important; /* Override other styles */
+    border-bottom: 1px solid #ddd;
+}
+.eval-report-container .panel-title {
+    font-size: 14px;
+}
+.eval-report-container .panel-title a {
+    display: block;
+    text-decoration: none;
+    color: #333;
+}
+.eval-report-container .panel-title a:hover {
+    color: #000;
+}
+.eval-report-container .panel-body {
+    font-size: 13px;
+    padding: 10px;
+}
+.eval-description {
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 10px;
+    font-style: italic;
+}
+.eval-issue-item {
+    cursor: pointer;
+}
+.eval-issue-item:hover, .eval-issue-item.cell-highlight {
+    background-color: #f0f8ff !important; /* AliceBlue, a very light blue */
+}
+.eval-issue-table {
+    font-size: 12px;
+    margin-bottom: 0;
+    background-color: #fff;
+}
+.eval-issue-table td, .eval-issue-table th {
+    padding: 4px;
+    vertical-align: middle;
+}

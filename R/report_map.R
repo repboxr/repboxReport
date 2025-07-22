@@ -284,6 +284,46 @@ rr_map_report <- function(project_dir,
     message("You can start one from R with: servr::httd('", normalizePath(output_dir, mustWork=FALSE), "')")
   }
 
+  # --- 5b. Process and generate evaluation data from rme.Rds ---
+  js_evals_data <- "{}"
+  js_eval_manifest_data <- "{}"
+  rme_file <- file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
+
+  processed_eval_data <- NULL
+  if (file.exists(rme_file)) {
+      message("Loading and processing evaluation data from rme.Rds...")
+      tryCatch({
+          rme <- readRDS(rme_file)
+          processed_eval_data <- rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source)
+      }, error = function(e) {
+          warning("Could not load or process rme.Rds: ", e$message)
+      })
+  } else {
+      message("No evaluation data file (rme.Rds) found, skipping.")
+  }
+
+  if (!is.null(processed_eval_data)) {
+      if (isTRUE(opts$embed_data)) {
+          js_evals_data <- jsonlite::toJSON(processed_eval_data, auto_unbox = TRUE, null = "null", na = "null")
+      } else {
+          eval_data_dir <- file.path(output_dir, "eval_data")
+          if (!dir.exists(eval_data_dir)) dir.create(eval_data_dir, recursive = TRUE)
+
+          manifest <- list()
+          for (version_id in names(processed_eval_data)) {
+              json_content <- jsonlite::toJSON(processed_eval_data[[version_id]], auto_unbox = TRUE, null = "null", na = "null")
+
+              file_name <- paste0("eval_", version_id, ".json")
+              file_path <- file.path(eval_data_dir, file_name)
+              relative_path <- file.path("eval_data", file_name)
+
+              writeLines(json_content, file_path)
+              manifest[[version_id]] <- relative_path
+          }
+          js_eval_manifest_data <- jsonlite::toJSON(manifest, auto_unbox = TRUE)
+      }
+  }
+
 
   message("Assembling final HTML report...")
   html_content <- htmltools::tagList(
@@ -313,6 +353,8 @@ rr_map_report <- function(project_dir,
       htmltools::tags$script(htmltools::HTML(paste0("var all_maps = ", js_maps_data, ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var report_manifest = ", js_manifest_data, ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var cell_conflict_data = ", js_conflict_data, ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var all_evals = ", js_evals_data, ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var eval_manifest = ", js_eval_manifest_data, ";"))),
       htmltools::tags$script(src = "shared/report_map.js")
     )
   )
@@ -326,6 +368,91 @@ rr_map_report <- function(project_dir,
 
 
 # --- Helper Functions ---
+
+#' Process rme$evals data for the report
+#' @param rme The loaded rme.Rds object
+#' @param all_map_types The loaded map data, used to resolve runids to code locations
+#' @param stata_source The stata_source parcel, used for robust script_num joins
+#' @return A nested list structured for JSON output
+#' @noRd
+rr_process_eval_data <- function(rme, all_map_types, stata_source) {
+    restore.point("rr_process_eval_data")
+    if (is.null(rme) || is.null(rme$evals)) return(NULL)
+
+    # Descriptions for each test type, to be shown in the UI
+    long_descriptions <- list(
+        runids_differ = "Discrepancy Across Map Versions: Identifies cells mapped to different regression `runid`s by different AI versions, indicating areas of uncertainty.",
+        invalid_runids = "Invalid `runid` Mapping: Flags mappings that point to a `runid` not found in the project's execution log. This is a critical integrity error.",
+        invalid_cellids = "Invalid `cellid` Mapping: Flags mappings that reference a `cellid` that does not exist in the parsed table data. This indicates a hallucinated or malformed cell reference.",
+        non_reg_cmd = "Mapping to Non-Regression Command: Identifies cells mapped to a non-regression command (e.g., `test`, `margins`). This is not necessarily an error but serves as an important note.",
+        coef_se_match = "Value Mismatch between Table and Code: Compares numeric values from the table (coefficients/SEs) against the results from the mapped regression's output. Highlights discrepancies.",
+        single_col_reg = "Regression Spans Multiple Columns: Flags regressions whose mapped cells span multiple columns without a clear structural reason (e.g., SEs in an adjacent column), which often indicates incorrect grouping.",
+        multicol_reg_plausibility = "Implausible Multi-Column Structure: Flags multi-column regressions where every row has a value in only one column, suggesting an incorrect mapping structure.",
+        overlapping_regs = "Overlapping Regression Mappings: Flags coefficient cells that have been mapped to more than one regression within the same map version, which is almost always an error.",
+        consistent_vertical_structure = "Inconsistent Summary Stat Rows: Checks for consistent table structure by flagging summary statistics (e.g., 'Observations') that appear on different row numbers across columns of a single table."
+    )
+
+    # Create a lookup from runid to script/line info for all maps
+    all_maps_flat_df <- purrr::map_dfr(unlist(all_map_types, recursive = FALSE), ~ if(!is.null(.x) && nrow(.x)>0) .x else NULL, .id = "map_version_id")
+
+    runid_to_code_df <- NULL
+    if (nrow(all_maps_flat_df) > 0 && "runid" %in% names(all_maps_flat_df)) {
+        all_maps_with_num <- rr_robust_script_num_join(all_maps_flat_df, stata_source)
+        runid_to_code_df <- all_maps_with_num %>%
+            dplyr::select(runid, script_num, code_line) %>%
+            dplyr::filter(!is.na(runid)) %>%
+            dplyr::distinct(runid, .keep_all = TRUE)
+    }
+
+    processed_evals <- list()
+    eval_tests <- rme$evals[sapply(rme$evals, function(x) !is.null(x) && NROW(x) > 0)]
+
+    for (test_name in names(eval_tests)) {
+        df <- eval_tests[[test_name]]
+        df <- dplyr::ungroup(df)
+
+        if (!"map_version" %in% names(df)) next
+
+        df$ver_id <- stringi::stri_match_last_regex(df$map_version, ":(.*)$")[, 2]
+        df <- dplyr::filter(df, !is.na(ver_id))
+        if(nrow(df) == 0) next
+
+        if ("runid" %in% names(df) && !is.null(runid_to_code_df)) {
+            df <- dplyr::left_join(df, runid_to_code_df, by = "runid")
+        }
+
+        # Convert all columns to character to avoid issues with mixed types in JSON
+        # except for list columns which purrr::transpose will handle.
+        # This is a bit of a sledgehammer but avoids many jsonlite issues.
+        is_list_col <- sapply(df, is.list)
+        df[!is_list_col] <- lapply(df[!is_list_col], as.character)
+
+        df_split_ver <- split(df, df$ver_id)
+
+        for (ver_id in names(df_split_ver)) {
+            ver_df <- df_split_ver[[ver_id]]
+            if (!"tabid" %in% names(ver_df)) next
+
+            ver_df$tabid <- as.character(ver_df$tabid)
+            df_split_tab <- split(ver_df, ver_df$tabid)
+
+            for (tabid in names(df_split_tab)) {
+                issue_df <- df_split_tab[[tabid]]
+                cols_to_keep <- setdiff(names(issue_df), c("map_version", "ver_id", "tabid"))
+
+                # purrr::transpose converts a data frame to a list of rows (records)
+                records <- purrr::transpose(issue_df[, cols_to_keep, drop = FALSE])
+
+                processed_evals[[ver_id]][[tabid]][[test_name]] <- list(
+                    description = long_descriptions[[test_name]] %||% attr(df, "descr") %||% "",
+                    issues = records
+                )
+            }
+        }
+    }
+    return(processed_evals)
+}
+
 
 #' @noRd
 #' @description Robustly adds script_num to a map data frame by joining on
