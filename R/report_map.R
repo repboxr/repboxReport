@@ -31,12 +31,14 @@ example = function() {
 #'   - `"none"`: Do not show any log output.
 #' * `map_prod_ids`: A character vector of map product IDs to load and display in the report. The user can switch between these map types in the UI.
 #' * `embed_data`: A logical value. If `TRUE` (default), all map data is embedded into a single self-contained HTML file. If `FALSE`, map data is written to external JSON files, which makes the initial report load faster but requires a web server for viewing.
+#' * `show_wrong_number_report`: A logical value or `NA`. If `TRUE`, shows the "Discrepancies Found" report based on `wrong_number_cases` from the map itself. If `FALSE`, this report is hidden. If `NA` (default), the report is hidden if a `rme.Rds` evaluation file is found for the document type, otherwise it is shown. This allows the more comprehensive evaluation report to supersede the basic one.
 #'
 #' @return A list of default options.
 #' @export
 rr_map_report_opts <- function(output_for = c("all", "reg", "reg_and_map", "none")[3],
-                             map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static"),
-                             embed_data = TRUE) {
+                             map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static")[1],
+                             embed_data = TRUE,
+                             show_wrong_number_report = NA) {
   as.list(environment())
 }
 
@@ -70,6 +72,12 @@ rr_map_report <- function(project_dir,
 
   if (is.null(opts)) {
     opts <- rr_map_report_opts()
+  }
+
+  # Decide on show_wrong_number_report if it's NA
+  rme_file_for_check <- file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
+  if (is.na(opts$show_wrong_number_report)) {
+      opts$show_wrong_number_report <- !file.exists(rme_file_for_check)
   }
 
   if (!dir.exists(output_dir)) {
@@ -170,7 +178,7 @@ rr_map_report <- function(project_dir,
 
     # 2. Wrong number conflicts
     wrong_num_msgs <- list()
-    if ("wrong_number_cases" %in% names(all_maps_flat_df) && nrow(all_maps_flat_df) > 0) {
+    if (isTRUE(opts$show_wrong_number_report) && "wrong_number_cases" %in% names(all_maps_flat_df) && nrow(all_maps_flat_df) > 0) {
         wnc_df <- all_maps_flat_df %>%
             dplyr::select(map_version_id, wrong_number_cases) %>%
             dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
@@ -356,6 +364,7 @@ rr_map_report <- function(project_dir,
       htmltools::tags$script(src = "shared/jquery.min.js"),
       htmltools::tags$script(src = "shared/bootstrap.min.js"),
       htmltools::tags$script(htmltools::HTML(paste0("var data_is_embedded = ", tolower(isTRUE(opts$embed_data)), ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var show_wrong_number_report_opt = ", tolower(isTRUE(opts$show_wrong_number_report)), ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var all_maps = ", js_maps_data, ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var report_manifest = ", js_manifest_data, ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var cell_conflict_data = ", js_conflict_data, ";"))),

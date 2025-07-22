@@ -2,6 +2,7 @@
 
 // Global variables set by the R backend
 // var data_is_embedded = true;
+// var show_wrong_number_report_opt = true;
 // var all_maps = { ... }; // Populated if data_is_embedded is true
 // var report_manifest = { ... }; // Populated if data_is_embedded is false
 // var cell_conflict_data = { ... }; // Populated with pre-computed conflict info
@@ -12,6 +13,7 @@ var active_map_type = "";
 var active_version = "";
 var active_mapping = {};
 var active_eval_data = null;
+var cell_issue_lookup = {}; // New: Lookup for cell issues from rme.Rds
 
 var last_code_highlight = "";
 var last_cell_highlights = [];
@@ -152,6 +154,10 @@ function apply_wrong_number_info(mapping) {
         this.style.removeProperty('background-image');
         $(this).removeClass("wrong-number-cell");
     });
+
+    if (!show_wrong_number_report_opt) {
+        return;
+    }
 
     if (!mapping || !mapping.wrong_number_info || !Array.isArray(mapping.wrong_number_info) || mapping.wrong_number_info.length === 0) {
         return;
@@ -303,8 +309,10 @@ function update_all_cell_titles() {
     $("[id^=c][id*=_]").each(function() {
         const cell_id = this.id;
         let title_parts = [`cell_id: ${cell_id}`];
-        let has_conflict = false;
+        let has_issue_or_conflict = false;
         $(this).removeClass("conflict-indicator");
+
+        // 1. Info from current map
         if (cell_map && cell_map[cell_id]) {
             const info = cell_map[cell_id];
             if (info.reg_ind != null) title_parts.push(`reg_ind: ${info.reg_ind}`);
@@ -313,12 +321,30 @@ function update_all_cell_titles() {
                 title_parts.push(`script: ${info.script_file}, line: ${info.code_line}`);
             }
         }
+
+        // 2. Cross-version mapping conflicts
         if (typeof cell_conflict_data !== 'undefined' && cell_conflict_data[cell_id]) {
             title_parts.push(cell_conflict_data[cell_id]);
-            has_conflict = true;
+            has_issue_or_conflict = true;
         }
+
+        // 3. Wrong number cases from map data (if option is on)
+        if (show_wrong_number_report_opt && active_mapping && active_mapping.wrong_number_info) {
+             const wrong_num_case = active_mapping.wrong_number_info.find(c => c.cell_id === cell_id);
+             if (wrong_num_case) {
+                  title_parts.push(`Discrepancy: Table(${wrong_num_case.wrong_number_in_cell}) vs Code(${wrong_num_case.number_in_stata_output})`);
+                  has_issue_or_conflict = true;
+             }
+        }
+
+        // 4. Issues from rme.Rds evaluation data
+        if (cell_issue_lookup && cell_issue_lookup[cell_id]) {
+            title_parts = title_parts.concat(cell_issue_lookup[cell_id]);
+            has_issue_or_conflict = true;
+        }
+
         $(this).attr('title', title_parts.join('\n'));
-        if (has_conflict) {
+        if (has_issue_or_conflict) {
             $(this).addClass("conflict-indicator");
         }
     });
@@ -332,35 +358,65 @@ function clear_eval_reports() {
 }
 
 function load_and_display_eval_data(version_id) {
+    clear_eval_reports();
+    cell_issue_lookup = {};
+
+    const on_eval_data_loaded = (data) => {
+        active_eval_data = data;
+        if (active_eval_data) {
+            // Build lookup for tooltips
+            for (const tabid in active_eval_data) {
+                const tests = active_eval_data[tabid];
+                for (const test_name in tests) {
+                    const test_data = tests[test_name];
+                    if (test_data.issues) {
+                        test_data.issues.forEach(issue => {
+                            let issue_summary = `[${test_name}]`;
+                            if (issue.issue) issue_summary += `: ${issue.issue}`;
+                            else if (issue.runids) issue_summary += `: runids ${issue.runids}`;
+
+                            const cellids = (issue.cellids || issue.cellid || '').split(',');
+                            cellids.forEach(cid_raw => {
+                                const cid = cid_raw.trim();
+                                if (cid) {
+                                    if (!cell_issue_lookup[cid]) cell_issue_lookup[cid] = [];
+                                    cell_issue_lookup[cid].push(issue_summary);
+                                }
+                            });
+                        });
+                    }
+                }
+            }
+            render_eval_reports(active_eval_data);
+        }
+        update_all_cell_titles();
+    };
+
     if (!version_id) {
-        clear_eval_reports();
+        on_eval_data_loaded(null);
         return;
     }
 
-    const render = (data) => {
-        active_eval_data = data;
-        if (active_eval_data) {
-            render_eval_reports(active_eval_data);
-        }
-    };
-
     if (data_is_embedded) {
-        render(typeof all_evals !== 'undefined' ? all_evals[version_id] : null);
+        on_eval_data_loaded(typeof all_evals !== 'undefined' ? all_evals[version_id] : null);
     } else {
         const eval_file_path = typeof eval_manifest !== 'undefined' ? eval_manifest[version_id] : null;
         if (!eval_file_path) {
-            clear_eval_reports();
+            on_eval_data_loaded(null);
             return;
         }
         fetch(eval_file_path)
             .then(response => {
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                if (!response.ok) {
+                    if (response.status === 404) return null; // Don't error on 404, just means no eval file
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
                 return response.json();
             })
-            .then(data => render(data))
+            .then(data => on_eval_data_loaded(data))
             .catch(error => {
                 console.warn(`Could not load evaluation data for version ${version_id} from ${eval_file_path}:`, error);
-                clear_eval_reports();
+                on_eval_data_loaded(null);
             });
     }
 }
@@ -452,13 +508,11 @@ function format_issues_html(test_name, issues) {
 
 function handle_map_change() {
     clear_all_highlights();
-    clear_eval_reports();
 
     const apply_updates = (map_data) => {
         active_mapping = map_data || {};
         apply_static_coloring(active_mapping);
         apply_wrong_number_info(active_mapping);
-        update_all_cell_titles();
         load_and_display_eval_data(active_version);
     };
 
