@@ -1,6 +1,7 @@
 # FILE: report_map.R
 
 example = function() {
+  library(repboxReport)
   # The project_dir needs to be set to a valid repbox project
   project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
   # Generate report with default options (embedded data)
