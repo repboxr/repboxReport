@@ -1,1036 +1,148 @@
-I will implement the requested changes to integrate the `rme.Rds` evaluation results into the interactive HTML report.
+Of course. Storing metadata like test descriptions directly within the data object (`rme.Rds`) is an excellent way to make your reporting tools more robust and easier to maintain. This avoids the need to update the reporting code every time a new evaluation test is added or a description is refined in the `repboxRegmap` package.
 
-Here is a summary of the plan:
-1.  **Update `rr_map_report_opts()`**: A new option `show_wrong_number_report` will be added to control the display of the basic "wrong number" discrepancy report. Its default value `NA` will allow the system to automatically hide it when the more comprehensive `rme.Rds` evaluation report is available.
-2.  **Update `rr_map_report()`**: This function will be modified to handle the new `show_wrong_number_report` option and pass it to the JavaScript front-end.
-3.  **Update `report_map.js`**: The JavaScript will be significantly enhanced to:
-    *   Conditionally display the basic "wrong number" report based on the new option.
-    *   Load, process, and display the detailed evaluation results from `rme.Rds`.
-    *   Orchestrate asynchronous data loading to ensure all data is ready before the UI is updated.
-    *   Augment cell tooltips (`title` attribute) and conflict indicators (red triangle) to reflect issues from all available sources: cross-version mapping conflicts, basic "wrong number" cases (if enabled), and the new `rme.Rds` evaluation results.
+Here are the proposed changes to `repboxReport` to implement this. The core idea is to:
+1.  Update and expand the internal list of test descriptions in `report_map.R` to include the new `missing_se_mapping` test and to align all descriptions with the more detailed versions from `rme_report.R`. This ensures reports still work correctly with older `rme.Rds` files.
+2.  Modify the logic to prioritize loading descriptions from the `rme.Rds` object itself (if present) before falling back to the internal list. This change anticipates that future versions of `rme.Rds` will contain a `long_descr` attribute for each test.
 
-These changes will provide a much richer and more informative debugging and validation experience directly within the interactive report.
+This approach solves the immediate problem and provides a future-proof, automatic mechanism for handling new tests.
 
-### Modifications
+Here is the modification for `rr_process_eval_data`:
 
-!MODIFICATION rr_map_report_opts in R/report_map.R
+!MODIFICATION rr_process_eval_data in report_map.R
 scope = "function"
 file = "R/report_map.R"
-function_name = "rr_map_report_opts"
-description = '''Add `show_wrong_number_report` option to control visibility of the basic discrepancy report, with a default of NA to allow automatic hiding when rme.Rds is present. '''
+function_name = "rr_process_eval_data"
+description = '''Update the function to make evaluation reporting more robust.
+
+1.  **Update and expand the internal `long_descriptions` list**:
+    -   Adds the description for the new `missing_se_mapping` test.
+    -   Updates all other descriptions to be more detailed and consistent with those in `repboxRegmap`, ensuring clarity in the report.
+2.  **Implement dynamic description loading**:
+    -   The function now first attempts to load a `long_descr` attribute from the test data within the `rme.Rds` object.
+    -   If not found, it falls back to the internal (now updated) `long_descriptions` list.
+    -   This makes the reporting logic automatically adapt to new tests and descriptions provided in future `rme.Rds` files, answering the user's request for a more automated system.'''
 ---
 ```r
-#' This function provides a list of default settings that can be passed to `rr_map_report`.
-#'
-#' **Options:**
-#' * `output_for`: Determines for which commands the log output is shown.
-#'   - `"reg"`: Show output only for regression commands (`is_reg=TRUE`).
-#'   - `"reg_and_map"`: (Default) Show output for all regression commands and for all other commands that are part of a map.
-#'   - `"all"`: Show output for all executed commands.
-#'   - `"none"`: Do not show any log output.
-#' * `map_prod_ids`: A character vector of map product IDs to load and display in the report. The user can switch between these map types in the UI.
-#' * `embed_data`: A logical value. If `TRUE` (default), all map data is embedded into a single self-contained HTML file. If `FALSE`, map data is written to external JSON files, which makes the initial report load faster but requires a web server for viewing.
-#' * `show_wrong_number_report`: A logical value or `NA`. If `TRUE`, shows the "Discrepancies Found" report based on `wrong_number_cases` from the map itself. If `FALSE`, this report is hidden. If `NA` (default), the report is hidden if a `rme.Rds` evaluation file is found for the document type, otherwise it is shown. This allows the more comprehensive evaluation report to supersede the basic one.
-#'
-#' @return A list of default options.
-#' @export
-rr_map_report_opts <- function(output_for = c("all", "reg", "reg_and_map", "none")[3],
-                             map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static"),
-                             embed_data = TRUE,
-                             show_wrong_number_report = NA) {
-  as.list(environment())
-}
-```
-!END_MODIFICATION rr_map_report_opts in R/report_map.R
+#' Process rme$evals data for the report
+#' @param rme The loaded rme.Rds object
+#' @param all_map_types The loaded map data, used to resolve runids to code locations
+#' @param stata_source The stata_source parcel, used for robust script_num joins
+#' @return A nested list structured for JSON output
+#' @noRd
+rr_process_eval_data <- function(rme, all_map_types, stata_source) {
+    restore.point("rr_process_eval_data")
+    if (is.null(rme) || is.null(rme$evals)) return(NULL)
 
-!MODIFICATION rr_map_report in R/report_map.R
-scope = "function"
-file = "R/report_map.R"
-function_name = "rr_map_report"
-description = '''Modify `rr_map_report` to handle the `NA` value for the new `show_wrong_number_report` option by checking for the existence of `rme.Rds`. Pass the final boolean value to JavaScript.'''
----
-```r
-#' Creates an interactive HTML report to visualize maps
-#'
-#' This function generates a self-contained HTML report that visualizes the
-#' maps between Stata do-files and regression tables. The report features
-#' static color-coding for regression cells and interactive highlighting.
-#'
-#' @param project_dir The root directory of the project.
-#' @param output_dir Directory for the report. Defaults to 'reports' in project_dir.
-#' @param output_file The name of the HTML report file.
-#' @param doc_type The document type (e.g., "art", "app1").
-#' @param opts A list of options, typically generated by `rr_map_report_opts()`.
-#' @return The path to the generated HTML report file.
-#' @export
-rr_map_report <- function(project_dir,
-                          output_dir = file.path(project_dir, "reports"),
-                          output_file = "map_report.html",
-                          doc_type = "art",
-                          opts = NULL) {
-  restore.point("rr_map_report")
-  # --- 0. Check dependencies & Options ---
-  pkgs <- c("dplyr", "tidyr", "stringi", "htmltools", "jsonlite", "purrr", "randtoolbox")
-  for (pkg in pkgs) {
-    if (!requireNamespace(pkg, quietly = TRUE)) {
-      stop(paste("Please install the '", pkg, "' package."), call. = FALSE)
-    }
-  }
+    # Descriptions for each test type, to be shown in the UI.
+    # This list is updated and serves as a fallback for older rme.Rds files
+    # that do not contain the descriptions as attributes.
+    long_descriptions <- list(
+        runids_differ = "Discrepancy Across Map Versions: This test identifies cells that are mapped to different regression 'runid's by different AI mapping versions. This is a key indicator of disagreement between models and points to areas of uncertainty.",
+        invalid_runids = "Invalid 'runid' Mapping: This test flags mappings that point to a 'runid' that does not exist in the project's execution log ('run_df'). This is a critical integrity error, as the mapped regression output cannot be found.",
+        invalid_cellids = "Invalid 'cellid' Mapping: This test flags mappings that reference a 'cellid' that does not exist in the parsed table data ('cell_df'). This is a critical integrity error, indicating a hallucinated or malformed cell reference from the AI.",
+        non_reg_cmd = "Mapping to Non-Regression Command: This test identifies cells mapped to a Stata command that is not a primary regression command (e.g., 'test', 'margins', 'summarize'). This is not necessarily an error—post-estimation results are often included in tables—but serves as an important note. The report shows the command type and the 'runid' of the last preceding regression.",
+        coef_se_match = "Value Mismatch between Table and Code: This is a core value-based check. It compares numeric values from the table (identified as coefficient/standard error pairs) against the results from the mapped regression's 'regcoef' output. A match is considered perfect if the code output, rounded to the number of decimal places shown in the table, equals the table value. Issues can be 'no_coef_match', 'no_match_perhaps_wrong_sign', 'no_paren_match', or 'rounding_error'.",
+        single_col_reg = "Regression Spans Multiple Columns: Regressions are typically presented in a single column. This test flags regressions whose mapped cells span multiple columns without a clear structural reason (like having standard errors in an adjacent column). This often indicates that cells from different regressions have been incorrectly grouped together.",
+        multicol_reg_plausibility = "Implausible Multi-Column Structure: For a regression that legitimately spans multiple columns, we expect to find rows with numbers in more than one of those columns. This test flags multi-column regressions where every row only has a value in one column, suggesting a 'slip' where different rows of the same conceptual regression were incorrectly assigned to different columns.",
+        overlapping_regs = "Overlapping Regression Mappings: This test flags cells identified as coefficients that have been mapped to more than one regression within the same map version. This is almost always an error, as a single coefficient should belong to only one regression specification.",
+        consistent_vertical_structure = "Inconsistent Summary Stat Rows: This test checks for consistent table structure. It identifies summary statistics (like 'Observations' or 'R-squared') by keywords and flags cases where the same statistic appears on different row numbers across the columns of a single table. This points to a potentially messy or inconsistent table layout or a mapping error.",
+        missing_se_mapping = "Unmapped Standard Error: This test flags cases where a mapped coefficient cell has an associated standard error (a value in parentheses, typically below the coefficient) that was not included in the regression mapping. It also reports whether the numeric value of that unmapped SE would have been a correct match for the regression's output, helping to distinguish simple mapping omissions from more complex issues."
+    )
 
-  if (is.null(opts)) {
-    opts <- rr_map_report_opts()
-  }
-
-  # Decide on show_wrong_number_report if it's NA
-  rme_file_for_check <- file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
-  if (is.na(opts$show_wrong_number_report)) {
-      opts$show_wrong_number_report <- !file.exists(rme_file_for_check)
-  }
-
-  if (!dir.exists(output_dir)) {
-    dir.create(output_dir, recursive = TRUE)
-  }
-
-  # --- 1. Setup asset paths ---
-  assets_dir <- file.path(output_dir, "shared")
-  if (!dir.exists(assets_dir)) {
-    dir.create(assets_dir, recursive = TRUE)
-  }
-
-  # --- 2. Load data ---
-  cat("\nLoading data...")
-  parcels <- repboxDB::repdb_load_parcels(project_dir, c("stata_source", "stata_run_cmd", "stata_run_log", "stata_cmd"))
-
-  fp_dir <- file.path(project_dir, "fp", paste0("prod_", doc_type))
-  tab_main_info <- rai_pick_tab_ver(fp_dir, "tab_main")
-  if(nrow(tab_main_info) == 0) {
-      stop("Could not find a suitable 'tab_main' product for doc_type '", doc_type, "'")
-  }
-  tab_main <- fp_load_prod_df(tab_main_info$ver_dir)
-
-  cat("\nLoading maps...")
-  all_map_types <- list()
-  prod_id = "map_reg_run"
-  for (prod_id in opts$map_prod_ids) {
-    map_list <- rr_load_all_map_versions(project_dir, doc_type, prod_id = prod_id)
-    if (length(map_list) > 0) {
-      all_map_types[[prod_id]] <- map_list
-    }
-  }
-  if (length(all_map_types) == 0) {
-    warning("No map versions found for any prod_id in opts$map_prod_ids. The report will be generated without interactive links.")
-  }
-
-  # Standardize reg_ind across all map types
-  if (length(all_map_types) > 0) {
-      cat("\nStandardizing regression indices...")
-      # source("R/standardize_reg_ind.R") # This line would be used to load the function
-      all_map_types <- rr_standardize_reg_ind(all_map_types)
-  }
-
-
-  # --- 3. Generate HTML & JS components ---
-  cat("\nGenerating HTML components...")
-
-  # Pre-compute conflict information for tooltips.
-  # A conflict exists if a cell_id maps to different script/line combinations
-  # across different map versions, or if it has a wrong_number_case.
-  cell_conflict_data <- {
-    all_maps_flat <- unlist(all_map_types, recursive = FALSE)
-    all_maps_flat_df <- purrr::map_dfr(all_maps_flat, ~.x, .id = "map_version_id")
-
-    # 1. Mapping conflicts
-    mapping_conflict_msgs <- list()
-    if (length(all_maps_flat) > 1 && nrow(all_maps_flat_df) > 0) {
-      conflict_df <- all_maps_flat_df %>%
-        rr_robust_script_num_join(parcels$stata_source$script_source) %>%
-        dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
-        dplyr::select(map_version_id, script_num, code_line, cell_ids) %>%
-        dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
-        tidyr::unnest(cell_id) %>%
-        dplyr::mutate(cell_id = trimws(cell_id)) %>%
-        dplyr::filter(cell_id != "") %>%
-        dplyr::select(map_version_id, cell_id, script_num, code_line) %>%
-        dplyr::distinct()
-
-      if (nrow(conflict_df) > 0) {
-          conflict_summary <- conflict_df %>%
-            dplyr::group_by(cell_id) %>%
-            dplyr::mutate(target_key = paste(script_num, code_line, sep = ":")) %>%
-            dplyr::summarise(
-              num_unique_targets = dplyr::n_distinct(target_key),
-              conflict_info = if (dplyr::n_distinct(target_key) > 1) {
-                list(dplyr::tibble(map_version_id = map_version_id, script_num = script_num, code_line = code_line))
-              } else {
-                list(NULL)
-              },
-              .groups = "drop"
-            ) %>%
-            dplyr::filter(num_unique_targets > 1)
-
-          if (nrow(conflict_summary) > 0) {
-            mapping_conflict_msgs <- setNames(
-              lapply(conflict_summary$conflict_info, function(info_df) {
-                details <- info_df %>%
-                  dplyr::distinct(map_version_id, script_num, code_line) %>%
-                  dplyr::mutate(msg = paste0(map_version_id, " -> S", script_num, " L", code_line)) %>%
-                  dplyr::pull(msg)
-                paste0("Note: Mapped differently in other versions:\n - ", paste(details, collapse="\n - "))
-              }),
-              conflict_summary$cell_id
-            )
-          }
-      }
+    # 1. Create robust lookup from runid to code location from rme$run_df (ground truth)
+    runid_to_code_lookup <- NULL
+    if ("run_df" %in% names(rme) && !is.null(rme$run_df)) {
+        runid_to_code_lookup <- rme$run_df %>%
+            dplyr::select(runid, script_num, code_line) %>%
+            dplyr::filter(!is.na(runid)) %>%
+            dplyr::distinct(runid, .keep_all = TRUE)
     }
 
-    # 2. Wrong number conflicts
-    wrong_num_msgs <- list()
-    if (isTRUE(opts$show_wrong_number_report) && "wrong_number_cases" %in% names(all_maps_flat_df) && nrow(all_maps_flat_df) > 0) {
-        wnc_df <- all_maps_flat_df %>%
-            dplyr::select(map_version_id, wrong_number_cases) %>%
-            dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
+    # 2. Create lookup from map info to get runid for tests that don't have it
+    all_maps_flat_df <- purrr::map_dfr(unlist(all_map_types, recursive = FALSE), ~ if(!is.null(.x) && nrow(.x)>0) .x else NULL, .id = "map_version_id")
+    reg_ind_to_runid_lookup <- NULL
+    if (nrow(all_maps_flat_df) > 0) {
+        reg_ind_to_runid_lookup <- all_maps_flat_df %>%
+            dplyr::select(map_version_id, tabid, reg_ind, runid) %>%
+            dplyr::filter(!is.na(reg_ind), !is.na(runid)) %>%
+            dplyr::distinct()
+    }
 
-        if (nrow(wnc_df) > 0) {
-            wrong_num_conflict_df <- wnc_df %>%
-                tidyr::unnest(cols = wrong_number_cases) %>%
-                dplyr::select(map_version_id, cell_id) %>%
-                dplyr::distinct() %>%
-                dplyr::filter(!is.na(cell_id)) %>%
-                dplyr::group_by(cell_id) %>%
-                dplyr::summarise(versions = paste(sort(unique(map_version_id)), collapse=", "), .groups="drop")
+    processed_evals <- list()
+    eval_tests <- rme$evals[sapply(rme$evals, function(x) !is.null(x) && NROW(x) > 0)]
 
-            if (nrow(wrong_num_conflict_df) > 0) {
-                wrong_num_msgs <- setNames(
-                    paste0("Note: Has wrong number discrepancy in version(s): ", wrong_num_conflict_df$versions),
-                    wrong_num_conflict_df$cell_id
+    for (test_name in names(eval_tests)) {
+        df <- eval_tests[[test_name]]
+        df <- dplyr::ungroup(df)
+
+        if (!"map_version" %in% names(df)) next
+
+        df$ver_id <- df$map_version
+        df <- dplyr::filter(df, !is.na(ver_id))
+        if(nrow(df) == 0) next
+
+        # Standardize runid column if it's named 'runids'
+        if ("runids" %in% names(df) && !"runid" %in% names(df)) {
+             df <- df %>% dplyr::rename(runid = runids)
+        }
+
+        # Ensure runid is numeric for joining
+        if ("runid" %in% names(df) && !is.numeric(df$runid)) {
+            df$runid <- suppressWarnings(as.numeric(as.character(df$runid)))
+        }
+
+        # If df has reg_ind but no runid, try to get runid from maps
+        if (!"runid" %in% names(df) && "reg_ind" %in% names(df) && !is.null(reg_ind_to_runid_lookup)) {
+            df$reg_ind <- as.integer(df$reg_ind)
+            df <- dplyr::left_join(df, reg_ind_to_runid_lookup, by = c("map_version" = "map_version_id", "tabid", "reg_ind"))
+        }
+
+        # If df now has runid, join with ground truth to get code location.
+        # This join will not filter out rows if runid is NA, which is what we want.
+        if ("runid" %in% names(df) && !is.null(runid_to_code_lookup)) {
+            df <- df %>%
+                dplyr::left_join(runid_to_code_lookup, by = "runid")
+        }
+
+        # Standardize cellids: if only cellid exists, copy it to cellids for the JS
+        if ("cellid" %in% names(df) && !"cellids" %in% names(df)) {
+            df$cellids <- df$cellid
+        }
+
+        # Convert all columns to character to avoid JSON issues
+        is_list_col <- sapply(df, is.list)
+        df[!is_list_col] <- lapply(df[!is_list_col], as.character)
+
+        df_split_ver <- split(df, df$ver_id)
+
+        for (ver_id in names(df_split_ver)) {
+            ver_df <- df_split_ver[[ver_id]]
+            if (!"tabid" %in% names(ver_df)) next
+
+            ver_df$tabid <- as.character(ver_df$tabid)
+            df_split_tab <- split(ver_df, ver_df$tabid)
+
+            for (tabid in names(df_split_tab)) {
+                issue_df <- df_split_tab[[tabid]]
+                cols_to_keep <- setdiff(names(issue_df), c("map_version", "ver_id", "tabid"))
+
+                records <- purrr::transpose(issue_df[, cols_to_keep, drop = FALSE])
+
+                # Get description: prefer 'long_descr' attr from rme.Rds,
+                # fallback to hardcoded list, then short 'descr' attr.
+                description <- attr(df, "long_descr") %||%
+                               long_descriptions[[test_name]] %||%
+                               attr(df, "descr") %||%
+                               "No description available for this test."
+
+                processed_evals[[ver_id]][[tabid]][[test_name]] <- list(
+                    description = description,
+                    issues = records
                 )
             }
         }
     }
-
-    # 3. Combine messages
-    all_conflict_cells <- unique(c(names(mapping_conflict_msgs), names(wrong_num_msgs)))
-    if (length(all_conflict_cells) > 0) {
-        li = lapply(all_conflict_cells, function(cid) {
-          restore.point("ssfk")
-          msg1 = msg2 = ""
-          if (cid %in% names(mapping_conflict_msgs)) {
-            msg1 <- mapping_conflict_msgs[[cid]]
-          }
-          if (cid %in% names(wrong_num_msgs)) {
-            msg2 <- wrong_num_msgs[[cid]]
-          }
-          # Filter NULLs and join with newline
-          paste(c(msg1, msg2)[!sapply(c(msg1, msg2), is.null)], collapse="\n")
-        })
-        li = setNames(li,all_conflict_cells)
-    } else {
-        li =list()
-    }
-    li
-  }
-  js_conflict_data <- jsonlite::toJSON(cell_conflict_data, auto_unbox = TRUE)
-
-
-  # Generate color map for consistent colors across all loaded maps
-  all_map_dfs <- unlist(all_map_types, recursive = FALSE)
-  all_reg_inds <- unique(unlist(lapply(all_map_dfs, function(df) if("reg_ind" %in% names(df)) unique(df$reg_ind) else NULL)))
-  all_reg_inds <- stats::na.omit(all_reg_inds)
-  reg_color_map <- rr_make_distinct_colors(length(all_reg_inds))
-  names(reg_color_map) <- all_reg_inds
-
-
-
-  # Add a script_file column for easier access
-  parcels$stata_source$script_source$script_file <- basename(parcels$stata_source$script_source$file_path)
-
-  do_panel_html <- rr_make_do_panel_html(
-    stata_source = parcels$stata_source$script_source,
-    stata_cmd = parcels$stata_cmd$stata_cmd,
-    stata_run_cmd = parcels$stata_run_cmd$stata_run_cmd,
-    stata_run_log = parcels$stata_run_log$stata_run_log,
-    opts = opts,
-    all_map_types = all_map_types
-  )
-
-  tab_panel_html <- rr_make_tab_panel_html(tab_main)
-  controls_html <- rr_make_controls_html(all_map_types)
-
-  # --- 4. Write JS and CSS assets ---
-  cat("\nWriting JS and CSS assets...")
-  rr_copy_pkg_assets(output_dir)
-
-  # --- 5. Generate JS data and Assemble final HTML report ---
-
-  # Conditionally generate map data (embedded vs. external)
-  js_maps_data <- "{}"
-  js_manifest_data <- "{}"
-
-  if (isTRUE(opts$embed_data)) {
-    cat("\nGenerating and embedding map data...")
-    processed_types <- purrr::map(all_map_types, function(map_list_for_type) {
-        purrr::map(map_list_for_type, function(map_df) {
-            rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
-        })
-    })
-    js_maps_data <- jsonlite::toJSON(processed_types, auto_unbox = TRUE, null = "null", na = "null")
-  } else {
-    cat("\nGenerating external JSON files for map data...")
-    maps_data_dir <- file.path(output_dir, "maps_data")
-    if (!dir.exists(maps_data_dir)) dir.create(maps_data_dir, recursive = TRUE)
-
-    manifest <- list()
-    for (map_type in names(all_map_types)) {
-        manifest[[map_type]] <- list()
-        for (version_id in names(all_map_types[[map_type]])) {
-            map_df <- all_map_types[[map_type]][[version_id]]
-            processed_map_list <- rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
-            json_content <- jsonlite::toJSON(processed_map_list, auto_unbox = TRUE, null = "null", na = "null")
-
-            file_name <- paste0(map_type, "_", version_id, ".json")
-            file_path <- file.path(maps_data_dir, file_name)
-            relative_path <- file.path("maps_data", file_name)
-
-            writeLines(json_content, file_path)
-            manifest[[map_type]][[version_id]] <- relative_path
-        }
-    }
-    js_manifest_data <- jsonlite::toJSON(manifest, auto_unbox = TRUE)
-    cat("\n\nExternal JSONs generated. Note: This report must now be viewed via a web server.")
-    cat("\nYou can start one from R with: servr::httd('", normalizePath(output_dir, mustWork=FALSE), "')")
-  }
-
-  # --- 5b. Process and generate evaluation data from rme.Rds ---
-  js_evals_data <- "{}"
-  js_eval_manifest_data <- "{}"
-  rme_file <- file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
-
-  processed_eval_data <- NULL
-  if (file.exists(rme_file)) {
-      cat("\nLoading and processing evaluation data from rme.Rds...")
-      tryCatch({
-          rme <- readRDS(rme_file)
-          processed_eval_data <- rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source)
-          if (!is.null(processed_eval_data) && length(processed_eval_data) > 0) {
-            cat("\nSuccessfully processed evaluation data.")
-          } else {
-            cat("\nEvaluation data found, but no applicable issues to report after processing.")
-          }
-      }, error = function(e) {
-          warning("Could not load or process rme.Rds: ", e$message)
-      })
-    } else {
-      cat("\nNo evaluation data file (rme.Rds) found, skipping.")
-  }
-
-  if (!is.null(processed_eval_data)) {
-      if (isTRUE(opts$embed_data)) {
-          js_evals_data <- jsonlite::toJSON(processed_eval_data, auto_unbox = TRUE, null = "null", na = "null")
-      } else {
-          eval_data_dir <- file.path(output_dir, "eval_data")
-          if (!dir.exists(eval_data_dir)) dir.create(eval_data_dir, recursive = TRUE)
-
-          manifest <- list()
-          for (version_id in names(processed_eval_data)) {
-              json_content <- jsonlite::toJSON(processed_eval_data[[version_id]], auto_unbox = TRUE, null = "null", na = "null")
-
-              file_name <- paste0("eval_", version_id, ".json")
-              file_path <- file.path(eval_data_dir, file_name)
-              relative_path <- file.path("eval_data", file_name)
-
-              writeLines(json_content, file_path)
-              manifest[[version_id]] <- relative_path
-          }
-          js_eval_manifest_data <- jsonlite::toJSON(manifest, auto_unbox = TRUE)
-      }
-  }
-
-
-  cat("\nAssembling final HTML report...")
-  html_content <- htmltools::tagList(
-    htmltools::tags$head(
-      htmltools::tags$meta(charset = "UTF-8"),
-      htmltools::tags$meta(`http-equiv` = "X-UA-Compatible", content = "IE=edge"),
-      htmltools::tags$meta(name="viewport", content="width=device-width, initial-scale=1"),
-      htmltools::tags$title(paste("map Report:", basename(project_dir))),
-      htmltools::tags$link(href = "shared/bootstrap.min.css", rel = "stylesheet"),
-      htmltools::tags$link(href = "shared/repbox.css", rel = "stylesheet")
-    ),
-    htmltools::tags$body(
-      htmltools::tags$div(class = "container-fluid",
-        htmltools::HTML(controls_html),
-        htmltools::tags$div(class = "row", style = "height: 95vh;",
-          htmltools::tags$div(id = "do-col-div", class = "col-sm-7",
-            htmltools::HTML(do_panel_html)
-          ),
-          htmltools::tags$div(id = "tabs-col-div", class = "col-sm-5",
-            htmltools::HTML(tab_panel_html)
-          )
-        )
-      ),
-      htmltools::tags$script(src = "shared/jquery.min.js"),
-      htmltools::tags$script(src = "shared/bootstrap.min.js"),
-      htmltools::tags$script(htmltools::HTML(paste0("var data_is_embedded = ", tolower(isTRUE(opts$embed_data)), ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var show_wrong_number_report_opt = ", tolower(isTRUE(opts$show_wrong_number_report)), ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var all_maps = ", js_maps_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var report_manifest = ", js_manifest_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var cell_conflict_data = ", js_conflict_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var all_evals = ", js_evals_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var eval_manifest = ", js_eval_manifest_data, ";"))),
-      htmltools::tags$script(src = "shared/report_map.js")
-    )
-  )
-
-  report_path <- file.path(output_dir, output_file)
-  htmltools::save_html(html_content, file = report_path)
-
-  message(paste("\nReport generated successfully at:", report_path))
-  return(invisible(report_path))
+    return(processed_evals)
 }
 ```
-!END_MODIFICATION rr_map_report in R/report_map.R
-
-!MODIFICATION report_map.js
-scope = "file"
-file = "inst/www/report_map.js"
-is_new_file = false
-description = '''Update report_map.js to orchestrate data loading and display of evaluation results, and to augment cell tooltips and conflict indicators with all available issue information.'''
----
-```javascript
-// FILE: report_map.js
-
-// Global variables set by the R backend
-// var data_is_embedded = true;
-// var show_wrong_number_report_opt = true;
-// var all_maps = { ... }; // Populated if data_is_embedded is true
-// var report_manifest = { ... }; // Populated if data_is_embedded is false
-// var cell_conflict_data = { ... }; // Populated with pre-computed conflict info
-// var all_evals = {}; // Populated with evaluation data if embedded
-// var eval_manifest = {}; // Populated with paths to evaluation data if external
-
-var active_map_type = "";
-var active_version = "";
-var active_mapping = {};
-var active_eval_data = null;
-var cell_issue_lookup = {}; // New: Lookup for cell issues from rme.Rds
-
-var last_code_highlight = "";
-var last_cell_highlights = [];
-
-// Globals for robust and performant number highlighting
-var original_log_htmls = {}; // Cache for pristine log HTML, keyed by the log <pre> element's ID.
-var last_highlighted_log_id = null; // ID of the last log <pre> element that was modified.
-
-function clear_all_highlights() {
-    if (last_code_highlight) {
-        $(last_code_highlight).removeClass("code-highlight");
-        last_code_highlight = "";
-    }
-
-    last_cell_highlights.forEach(function(id) {
-        $(id).removeClass("cell-highlight");
-    });
-    last_cell_highlights = [];
-
-    $(".wrong-number-report-highlight").removeClass("wrong-number-report-highlight");
-    // Clear highlights from eval items
-    $(".eval-issue-item.cell-highlight").removeClass("cell-highlight");
-
-    // Only restore the last modified log. The new highlight function will handle its own state.
-    if (last_highlighted_log_id && original_log_htmls[last_highlighted_log_id]) {
-        const log_code_element = $("#" + last_highlighted_log_id).find('.logtxt-code');
-        if (log_code_element.length > 0) {
-            log_code_element.html(original_log_htmls[last_highlighted_log_id]);
-        }
-    }
-    last_highlighted_log_id = null;
-}
-
-// Find and highlight a number in a log output
-function highlight_number_in_log(log_element, raw_number_str) {
-    const log_id = log_element.attr('id');
-    const log_code_element = log_element.find('.logtxt-code');
-    if (log_code_element.length === 0) return;
-
-    // 1. Ensure original HTML is cached.
-    if (!original_log_htmls[log_id]) {
-        original_log_htmls[log_id] = log_code_element.html();
-    }
-
-    // 2. Always start the search from the pristine, original HTML.
-    const log_html = original_log_htmls[log_id];
-
-    // 3. Find the best match.
-    let number_str = String(raw_number_str).trim();
-    let cleaned_str = number_str.replace(/[(),*]/g, '');
-    let target_num = parseFloat(cleaned_str);
-    if (isNaN(target_num)) return;
-
-    const for_decimal_places = number_str.replace(/[^\d.]/g, '');
-    const decimal_places = (for_decimal_places.split('.')[1] || '').length;
-
-    const number_regex = /-?\d*\.?\d+/g;
-    let best_match = null;
-    let min_diff = Infinity;
-    let match;
-
-    while ((match = number_regex.exec(log_html)) !== null) {
-        const num_in_log_str = match[0];
-        if (num_in_log_str === '.' || num_in_log_str === '-') continue;
-        const num_in_log = parseFloat(num_in_log_str);
-        if (isNaN(num_in_log)) continue;
-
-        const scale = Math.pow(10, decimal_places);
-        const rounded_log_num = Math.round(num_in_log * scale) / scale;
-        const rounded_target_num = Math.round(target_num * scale) / scale;
-
-        if (rounded_log_num === rounded_target_num) {
-            const diff = Math.abs(num_in_log - target_num);
-            if (diff < min_diff) {
-                min_diff = diff;
-                best_match = match;
-            }
-        }
-    }
-
-    // 4. Apply the new highlight.
-    if (best_match) {
-        const original_text = best_match[0];
-        const new_html = log_html.substring(0, best_match.index) +
-                         '<span class="number-highlight">' + original_text + '</span>' +
-                         log_html.substring(best_match.index + original_text.length);
-        log_code_element.html(new_html);
-        last_highlighted_log_id = log_id;
-    } else {
-        log_code_element.html(log_html); // Restore if no match
-    }
-}
-
-function clear_static_coloring() {
-    $(".statically-colored").each(function() {
-        this.style.removeProperty('background-color');
-        $(this).removeClass("statically-colored");
-    });
-}
-
-function is_in_viewport(element) {
-    if (!element) return false;
-    const container = element.closest('.tab-content');
-    if (!container) return false;
-    const containerRect = container.getBoundingClientRect();
-    const elementRect = element.getBoundingClientRect();
-    return (
-        elementRect.top >= containerRect.top &&
-        elementRect.bottom <= containerRect.bottom
-    );
-}
-
-function apply_static_coloring(mapping) {
-    clear_static_coloring();
-    if (!mapping || !mapping.reg_info) return;
-    const reg_info = mapping.reg_info;
-    for (const reg_ind in reg_info) {
-        if (reg_info.hasOwnProperty(reg_ind)) {
-            const info = reg_info[reg_ind];
-            if (info.color && info.cell_ids) {
-                const cell_ids = info.cell_ids.split(',');
-                cell_ids.forEach(id => {
-                    const cell_selector = "#" + id.trim();
-                    const element = $(cell_selector);
-                    if (element.length > 0) {
-                        element[0].style.setProperty('background-color', info.color, 'important');
-                        element.addClass('statically-colored');
-                    }
-                });
-            }
-        }
-    }
-}
-
-function apply_wrong_number_info(mapping) {
-    $(".wrong-number-report").remove();
-    $(".wrong-number-cell").each(function() {
-        this.style.removeProperty('background-image');
-        $(this).removeClass("wrong-number-cell");
-    });
-
-    if (!show_wrong_number_report_opt) {
-        return;
-    }
-
-    if (!mapping || !mapping.wrong_number_info || !Array.isArray(mapping.wrong_number_info) || mapping.wrong_number_info.length === 0) {
-        return;
-    }
-
-    const cell_to_color = {};
-    if (mapping.reg_info) {
-        for (const reg_ind in mapping.reg_info) {
-            const info = mapping.reg_info[reg_ind];
-            if (info.color && info.cell_ids) {
-                info.cell_ids.split(',').forEach(id => {
-                    cell_to_color[id.trim()] = info.color;
-                });
-            }
-        }
-    }
-
-    const wrong_cases_by_tab = {};
-    mapping.wrong_number_info.forEach(case_item => {
-        const tabid = String(case_item.tabid);
-        if (!wrong_cases_by_tab[tabid]) wrong_cases_by_tab[tabid] = [];
-        wrong_cases_by_tab[tabid].push(case_item);
-        const cell_element = $("#" + case_item.cell_id);
-        if (cell_element.length > 0) {
-            cell_element.addClass("wrong-number-cell");
-            const reg_color = cell_to_color[case_item.cell_id] || '#f0f0f0';
-            const gradient = `linear-gradient(45deg, #cccccc, ${reg_color})`;
-            cell_element[0].style.setProperty('background-image', gradient, 'important');
-        }
-    });
-
-    for (const tabid in wrong_cases_by_tab) {
-        if (wrong_cases_by_tab.hasOwnProperty(tabid)) {
-            const cases_for_tab = wrong_cases_by_tab[tabid];
-            let report_html = '<div class="wrong-number-report">';
-            report_html += '<h6>Discrepancies Found (click to locate):</h6><ul>';
-            cases_for_tab.forEach(case_item => {
-                report_html += `<li class="wrong-number-report-item" data-cell-id="${case_item.cell_id}" data-runid="${case_item.runid}" data-script-num="${case_item.script_num}" data-code-line="${case_item.code_line}" data-stata-number="${case_item.number_in_stata_output}">Cell <code>${case_item.cell_id}</code>: Table shows ${case_item.wrong_number_in_cell}, but script output is ${case_item.number_in_stata_output}.</li>`;
-            });
-            report_html += '</ul></div>';
-            const table_container = $("#tabtab" + tabid + " .art-tab-div");
-            if (table_container.length > 0) {
-                table_container.append(report_html);
-            }
-        }
-    }
-}
-
-function highlight_code(script_num, line_num, runid_to_show, number_to_find) {
-    $("#dotabs a[href='#dotab_" + script_num + "']").tab("show");
-
-    setTimeout(function() {
-        const code_id = "#L" + line_num + "___" + script_num;
-        $(code_id).addClass("code-highlight");
-        last_code_highlight = code_id;
-
-        const targetElement = document.querySelector(code_id);
-        if (targetElement && !is_in_viewport(targetElement)) {
-            targetElement.scrollIntoView({ behavior: "smooth", block: "start" });
-        }
-
-        if (runid_to_show && runid_to_show !== 'null') {
-            const log_container = $('#loginfo-' + line_num + '-' + script_num);
-
-            const do_log_show_and_scroll = function() {
-                const run_pre = $('#runid-' + runid_to_show);
-                if (run_pre.length === 0) return;
-
-                const scroll_and_highlight = function(pre_element) {
-                    if (!is_in_viewport(pre_element[0])) {
-                        pre_element[0].scrollIntoView({ behavior: 'smooth', block: 'start' });
-                    }
-                    if (typeof number_to_find !== 'undefined' && number_to_find !== null) {
-                        highlight_number_in_log(pre_element, number_to_find);
-                    }
-                };
-
-                const tab_pane = run_pre.closest('.tab-pane');
-
-                // Case 1: Log is part of a multi-run tab set inside the log container
-                if (tab_pane.length > 0) {
-                    const is_active = tab_pane.hasClass('active');
-
-                    if (is_active) {
-                        // If tab is already visible, highlight after a zero-delay timeout
-                        // to ensure the browser has processed the 'clear' from the click event.
-                        setTimeout(() => scroll_and_highlight(run_pre), 0);
-                    } else {
-                        // If tab is not visible, use the Bootstrap event to highlight after it's shown.
-                        const pane_id = tab_pane.attr('id');
-                        $('a[href="#' + pane_id + '"]').one('shown.bs.tab', function() {
-                             scroll_and_highlight(run_pre);
-                        }).tab('show');
-                    }
-                }
-                // Case 2: Log is a single run (no inner tabs)
-                else {
-                    // Highlight after a zero-delay timeout.
-                    setTimeout(() => scroll_and_highlight(run_pre), 0);
-                }
-            };
-
-            // Main entry point for showing/scrolling logs.
-            // Check if the whole log container needs to be expanded first.
-            if (log_container.hasClass('in')) {
-                do_log_show_and_scroll();
-            } else {
-                log_container.one('shown.bs.collapse', do_log_show_and_scroll).collapse('show');
-            }
-        }
-    }, 150);
-}
-
-function highlight_cells(tabid, cell_ids_string, use_red_outline = false) {
-    if (!tabid || !cell_ids_string) return;
-    $("#tabtabs a[href='#tabtab" + tabid + "']").tab("show");
-
-    setTimeout(function() {
-        const cell_ids = cell_ids_string.split(",");
-        cell_ids.forEach(id => {
-            const cell_selector = "#" + id.trim();
-            $(cell_selector).addClass("cell-highlight");
-            if (use_red_outline) {
-                $(cell_selector).addClass("wrong-number-report-highlight");
-            }
-            last_cell_highlights.push(cell_selector);
-        });
-        if (cell_ids.length > 0) {
-            const targetElement = document.querySelector("#" + cell_ids[0].trim());
-            if(targetElement) {
-               targetElement.scrollIntoView({ behavior: "smooth", block: "center" });
-            }
-        }
-    }, 150);
-}
-
-function update_version_selector() {
-    const source = data_is_embedded ? all_maps : report_manifest;
-    const versions = Object.keys(source[active_map_type] || {});
-    const version_selector = $("#version_selector");
-    version_selector.empty();
-    versions.forEach(function(v) {
-        version_selector.append($("<option></option>").attr("value", v).text(v));
-    });
-}
-
-function update_all_cell_titles() {
-    const cell_map = active_mapping ? active_mapping.cell_map : null;
-    $("[id^=c][id*=_]").each(function() {
-        const cell_id = this.id;
-        let title_parts = [`cell_id: ${cell_id}`];
-        let has_issue_or_conflict = false;
-        $(this).removeClass("conflict-indicator");
-
-        // 1. Info from current map
-        if (cell_map && cell_map[cell_id]) {
-            const info = cell_map[cell_id];
-            if (info.reg_ind != null) title_parts.push(`reg_ind: ${info.reg_ind}`);
-            if (info.runid != null) title_parts.push(`runid: ${info.runid}`);
-            if (info.script_file != null && info.code_line != null) {
-                title_parts.push(`script: ${info.script_file}, line: ${info.code_line}`);
-            }
-        }
-
-        // 2. Cross-version mapping conflicts
-        if (typeof cell_conflict_data !== 'undefined' && cell_conflict_data[cell_id]) {
-            title_parts.push(cell_conflict_data[cell_id]);
-            has_issue_or_conflict = true;
-        }
-
-        // 3. Wrong number cases from map data (if option is on)
-        if (show_wrong_number_report_opt && active_mapping && active_mapping.wrong_number_info) {
-             const wrong_num_case = active_mapping.wrong_number_info.find(c => c.cell_id === cell_id);
-             if (wrong_num_case) {
-                  title_parts.push(`Discrepancy: Table(${wrong_num_case.wrong_number_in_cell}) vs Code(${wrong_num_case.number_in_stata_output})`);
-                  has_issue_or_conflict = true;
-             }
-        }
-
-        // 4. Issues from rme.Rds evaluation data
-        if (cell_issue_lookup && cell_issue_lookup[cell_id]) {
-            title_parts = title_parts.concat(cell_issue_lookup[cell_id]);
-            has_issue_or_conflict = true;
-        }
-
-        $(this).attr('title', title_parts.join('\n'));
-        if (has_issue_or_conflict) {
-            $(this).addClass("conflict-indicator");
-        }
-    });
-}
-
-// --- Evaluation Report Functions ---
-
-function clear_eval_reports() {
-    $(".eval-report-container").remove();
-    active_eval_data = null;
-}
-
-function load_and_display_eval_data(version_id) {
-    clear_eval_reports();
-    cell_issue_lookup = {};
-
-    const on_eval_data_loaded = (data) => {
-        active_eval_data = data;
-        if (active_eval_data) {
-            // Build lookup for tooltips
-            for (const tabid in active_eval_data) {
-                const tests = active_eval_data[tabid];
-                for (const test_name in tests) {
-                    const test_data = tests[test_name];
-                    if (test_data.issues) {
-                        test_data.issues.forEach(issue => {
-                            let issue_summary = `[${test_name}]`;
-                            if (issue.issue) issue_summary += `: ${issue.issue}`;
-                            else if (issue.runids) issue_summary += `: runids ${issue.runids}`;
-
-                            const cellids = (issue.cellids || issue.cellid || '').split(',');
-                            cellids.forEach(cid_raw => {
-                                const cid = cid_raw.trim();
-                                if (cid) {
-                                    if (!cell_issue_lookup[cid]) cell_issue_lookup[cid] = [];
-                                    cell_issue_lookup[cid].push(issue_summary);
-                                }
-                            });
-                        });
-                    }
-                }
-            }
-            render_eval_reports(active_eval_data);
-        }
-        update_all_cell_titles();
-    };
-
-    if (!version_id) {
-        on_eval_data_loaded(null);
-        return;
-    }
-
-    if (data_is_embedded) {
-        on_eval_data_loaded(typeof all_evals !== 'undefined' ? all_evals[version_id] : null);
-    } else {
-        const eval_file_path = typeof eval_manifest !== 'undefined' ? eval_manifest[version_id] : null;
-        if (!eval_file_path) {
-            on_eval_data_loaded(null);
-            return;
-        }
-        fetch(eval_file_path)
-            .then(response => {
-                if (!response.ok) {
-                    if (response.status === 404) return null; // Don't error on 404, just means no eval file
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => on_eval_data_loaded(data))
-            .catch(error => {
-                console.warn(`Could not load evaluation data for version ${version_id} from ${eval_file_path}:`, error);
-                on_eval_data_loaded(null);
-            });
-    }
-}
-
-function render_eval_reports(eval_data_for_version) {
-    for (const tabid in eval_data_for_version) {
-        const table_container = $("#tabtab" + tabid + " .art-tab-div");
-        if (table_container.length === 0) continue;
-
-        const tab_eval_data = eval_data_for_version[tabid];
-        const accordion_id = `eval-accordion-${tabid}`;
-        let accordion_html = `<div class="panel-group eval-report-container" id="${accordion_id}" role="tablist" aria-multiselectable="true">`;
-        let test_counter = 0;
-
-        for (const test_name in tab_eval_data) {
-            const test_data = tab_eval_data[test_name];
-            const issues = test_data.issues;
-            if (!issues || issues.length === 0) continue;
-
-            const panel_id = `eval-panel-${tabid}-${test_counter}`;
-            const collapse_id = `eval-collapse-${tabid}-${test_counter}`;
-
-            accordion_html += `
-            <div class="panel panel-default">
-                <div class="panel-heading" role="tab" id="${panel_id}-heading">
-                    <h4 class="panel-title">
-                        <a role="button" data-toggle="collapse" data-parent="#${accordion_id}" href="#${collapse_id}" aria-expanded="false" aria-controls="${collapse_id}">
-                            Test: ${test_name} <span class="badge">${issues.length}</span>
-                        </a>
-                    </h4>
-                </div>
-                <div id="${collapse_id}" class="panel-collapse collapse" role="tabpanel" aria-labelledby="${panel_id}-heading">
-                    <div class="panel-body">
-                        <p class="eval-description">${test_data.description || ''}</p>
-                        ${format_issues_html(test_name, issues)}
-                    </div>
-                </div>
-            </div>`;
-            test_counter++;
-        }
-        accordion_html += `</div>`;
-        if (test_counter > 0) {
-            table_container.append('<h5>Mapping Evaluation Results</h5>' + accordion_html);
-        }
-    }
-}
-
-function format_issues_html(test_name, issues) {
-    const custom_formatters = {
-        "invalid_cellids": (issue) => `<strong>Reg. ${issue.reg_ind}</strong>: Affects cells <code>${issue.cellids}</code>`,
-        "single_col_reg": (issue) => `<strong>Reg. ${issue.reg_ind}</strong>: Affects cells <code>${issue.cellids}</code>`,
-        "multicol_reg_plausibility": (issue) => `<strong>Reg. ${issue.reg_ind}</strong>: Implausible structure for columns <code>${issue.cols}</code>. (Cells: <code>${issue.cellids}</code>)`
-    };
-
-    if (custom_formatters[test_name]) {
-        let list_html = '<ul>';
-        issues.forEach((issue, index) => {
-            list_html += `<li class="eval-issue-item" data-test="${test_name}" data-index="${index}">${custom_formatters[test_name](issue)}</li>`;
-        });
-        return list_html + '</ul>';
-    }
-
-    // Default to a table
-    const headers = Object.keys(issues[0] || {});
-    const ignore_cols = ['script_num', 'code_line', 'wrong_number_in_cell', 'number_in_stata_output', 'details', 'partner_cellid'];
-    const display_headers = headers.filter(h => !ignore_cols.includes(h));
-
-    let table_html = '<div class="table-responsive"><table class="table table-condensed table-bordered eval-issue-table"><thead><tr>';
-    display_headers.forEach(h => table_html += `<th>${h}</th>`);
-    table_html += '</tr></thead><tbody>';
-
-    issues.forEach((issue, index) => {
-        table_html += `<tr class="eval-issue-item" data-test="${test_name}" data-index="${index}">`;
-        display_headers.forEach(h => {
-            let val = issue[h];
-            if(val === null || typeof val === 'undefined') val = '';
-            if (typeof val === 'number') val = Number(val.toPrecision(4));
-            // Add title for long content like 'details'
-            let title = (h === 'issue' && issue.details) ? `title="${issue.details}"` : '';
-            table_html += `<td ${title}>${val}</td>`;
-        });
-        table_html += '</tr>';
-    });
-
-    return table_html + '</tbody></table></div>';
-}
-
-// --- Main Event Handling ---
-
-function handle_map_change() {
-    clear_all_highlights();
-
-    const apply_updates = (map_data) => {
-        active_mapping = map_data || {};
-        apply_static_coloring(active_mapping);
-        apply_wrong_number_info(active_mapping);
-        load_and_display_eval_data(active_version);
-    };
-
-    if (data_is_embedded) {
-        const map_data = all_maps[active_map_type] ? all_maps[active_map_type][active_version] : null;
-        apply_updates(map_data);
-    } else {
-        const file_path = report_manifest[active_map_type]?.[active_version];
-        if (!file_path) {
-            apply_updates(null);
-            return;
-        }
-        const selectors = $("#map_type_selector, #version_selector");
-        selectors.prop("disabled", true);
-        fetch(file_path)
-            .then(response => {
-                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-                return response.json();
-            })
-            .then(data => apply_updates(data))
-            .catch(error => {
-                console.error("Failed to fetch map data:", error);
-                alert("Failed to load map data. Please ensure you are viewing this report via a web server and the file exists: " + file_path);
-                apply_updates(null);
-            })
-            .finally(() => selectors.prop("disabled", false));
-    }
-}
-
-$(document).ready(function() {
-    const map_types = Object.keys(data_is_embedded ? all_maps : report_manifest);
-    if (map_types.length === 0) {
-        $(".controls-div").hide();
-        return;
-    }
-    $("#map_type_selector").on("change", function() {
-        active_map_type = $(this).val();
-        update_version_selector();
-        $("#version_selector").trigger("change");
-    });
-    $("#version_selector").on("change", function() {
-        active_version = $(this).val();
-        handle_map_change();
-    });
-    $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
-        clear_all_highlights();
-        const cell_id = event.currentTarget.id;
-        const cell_content = $(event.currentTarget).text();
-        if (active_mapping && active_mapping.cell_to_code_idx && active_mapping.code_locations) {
-            const location_idx = active_mapping.cell_to_code_idx[cell_id];
-            if (typeof location_idx !== 'undefined') {
-                const location_data = active_mapping.code_locations[location_idx];
-                highlight_cells(null, cell_id);
-                const runid = location_data[0];
-                const script_num = location_data[1];
-                const code_line = location_data[2];
-                highlight_code(script_num, code_line, runid, cell_content);
-            }
-        }
-    });
-    $(document).on("click", ".reg-cmd", function(event) {
-        clear_all_highlights();
-        const code_el = $(event.currentTarget);
-        const code_id_parts = code_el.attr("id").split("___");
-        const line = code_id_parts[0].substring(1);
-        const script_num = code_id_parts[1];
-        const lookup_key = "s" + script_num + "_l" + line;
-        if (active_mapping && active_mapping.code_to_cells && active_mapping.code_to_cells[lookup_key]) {
-            const mapping = active_mapping.code_to_cells[lookup_key];
-            code_el.addClass("code-highlight");
-            last_code_highlight = "#" + code_el.attr("id");
-            highlight_cells(mapping.tabid, mapping.cell_ids);
-        }
-    });
-    $(document).on("click", ".wrong-number-report-item", function() {
-        clear_all_highlights();
-        const el = $(this);
-        const cell_id = el.data("cell-id");
-        const runid = el.data("runid");
-        const script_num = el.data("script-num");
-        const code_line = el.data("code-line");
-        const stata_number = el.data("stata-number");
-
-        if (cell_id) {
-            const tab_pane_id = $("#" + cell_id).closest('.tab-pane[id^=tabtab]').attr('id');
-            highlight_cells(tab_pane_id.replace('tabtab',''), cell_id, true);
-        }
-        if (script_num && script_num !== 'null' && code_line && code_line !== 'null') {
-            highlight_code(script_num, code_line, runid, stata_number);
-        }
-    });
-    $(document).on("click", ".eval-issue-item", function() {
-        clear_all_highlights();
-        const el = $(this);
-        el.addClass('cell-highlight');
-
-        const test_name = el.data("test");
-        const index = el.data("index");
-        const tabid = el.closest(".art-tab-div").parent().attr("id").replace("tabtab", "");
-        if (!active_eval_data || !active_eval_data[tabid] || !active_eval_data[tabid][test_name]) return;
-        const issue = active_eval_data[tabid][test_name].issues[index];
-
-        const cellids_str = issue.cellids || issue.cellid || '';
-        const runid = issue.runid;
-        const script_num = issue.script_num;
-        const code_line = issue.code_line;
-        const stata_number = issue.number_in_stata_output || issue.closest_reg_val;
-
-        if (cellids_str) {
-            highlight_cells(tabid, cellids_str, true);
-        }
-
-        if (script_num && code_line) {
-             highlight_code(script_num, code_line, runid, stata_number);
-        }
-    });
-    active_map_type = $("#map_type_selector").val();
-    update_version_selector();
-    $("#version_selector").trigger("change");
-});
-```
-!END_MODIFICATION report_map.js
+!END_MODIFICATION rr_process_eval_data in report_map.R
