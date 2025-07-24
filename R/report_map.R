@@ -33,13 +33,19 @@ example = function() {
 #' * `map_prod_ids`: A character vector of map product IDs to load and display in the report. The user can switch between these map types in the UI.
 #' * `embed_data`: A logical value. If `TRUE` (default), all map data is embedded into a single self-contained HTML file. If `FALSE`, map data is written to external JSON files, which makes the initial report load faster but requires a web server for viewing.
 #' * `show_wrong_number_report`: A logical value or `NA`. If `TRUE`, shows the "Discrepancies Found" report based on `wrong_number_cases` from the map itself. If `FALSE`, this report is hidden. If `NA` (default), the report is hidden if a `rme.Rds` evaluation file is found for the document type, otherwise it is shown. This allows the more comprehensive evaluation report to supersede the basic one.
+#' * `only_tests`: An optional character vector of evaluation test names (e.g., `c("coef_se_match", "invalid_runids")`). If provided, only these tests will be included in the evaluation report.
+#' * `ignore_tests`: An optional character vector of evaluation test names to exclude from the report.
+#' * `test_order`: An optional character vector specifying the desired order of tests in the report. Tests included in this vector will appear first, in the specified order. Any remaining tests will be appended alphabetically.
 #'
 #' @return A list of default options.
 #' @export
 rr_map_report_opts <- function(output_for = c("all", "reg", "reg_and_map", "none")[3],
                              map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static")[1],
                              embed_data = TRUE,
-                             show_wrong_number_report = NA) {
+                             show_wrong_number_report = NA,
+                             only_tests = NULL,
+                             ignore_tests = NULL,
+                             test_order = NULL) {
   as.list(environment())
 }
 
@@ -114,14 +120,6 @@ rr_map_report <- function(project_dir,
   if (length(all_map_types) == 0) {
     warning("No map versions found for any prod_id in opts$map_prod_ids. The report will be generated without interactive links.")
   }
-
-  # Standardize reg_ind across all map types
-  if (length(all_map_types) > 0) {
-      cat("\nStandardizing regression indices...")
-      # source("R/standardize_reg_ind.R") # This line would be used to load the function
-      all_map_types <- rr_standardize_reg_ind(all_map_types)
-  }
-
 
   # --- 3. Generate HTML & JS components ---
   cat("\nGenerating HTML components...")
@@ -304,7 +302,7 @@ rr_map_report <- function(project_dir,
       cat("\nLoading and processing evaluation data from rme.Rds...")
       tryCatch({
           rme <- readRDS(rme_file)
-          processed_eval_data <- rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source)
+          processed_eval_data <- rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source, opts)
           if (!is.null(processed_eval_data) && length(processed_eval_data) > 0) {
             cat("\nSuccessfully processed evaluation data.")
           } else {
@@ -384,29 +382,16 @@ rr_map_report <- function(project_dir,
 
 
 # --- Helper Functions ---
-
 #' Process rme$evals data for the report
 #' @param rme The loaded rme.Rds object
 #' @param all_map_types The loaded map data, used to resolve runids to code locations
 #' @param stata_source The stata_source parcel, used for robust script_num joins
+#' @param opts A list of options, typically from `rr_map_report_opts()`.
 #' @return A nested list structured for JSON output
 #' @noRd
-rr_process_eval_data <- function(rme, all_map_types, stata_source) {
+rr_process_eval_data <- function(rme, all_map_types, stata_source, opts = list()) {
     restore.point("rr_process_eval_data")
     if (is.null(rme) || is.null(rme$evals)) return(NULL)
-
-    # Descriptions for each test type, to be shown in the UI
-    long_descriptions <- list(
-        runids_differ = "Discrepancy Across Map Versions: Identifies cells mapped to different regression `runid`s by different AI versions, indicating areas of uncertainty.",
-        invalid_runids = "Invalid `runid` Mapping: Flags mappings that point to a `runid` not found in the project's execution log. This is a critical integrity error.",
-        invalid_cellids = "Invalid `cellid` Mapping: Flags mappings that reference a `cellid` that does not exist in the parsed table data. This indicates a hallucinated or malformed cell reference.",
-        non_reg_cmd = "Mapping to Non-Regression Command: Identifies cells mapped to a non-regression command (e.g., `test`, `margins`). This is not necessarily an error but serves as an important note.",
-        coef_se_match = "Value Mismatch between Table and Code: Compares numeric values from the table (coefficients/SEs) against the results from the mapped regression's output. Highlights discrepancies.",
-        single_col_reg = "Regression Spans Multiple Columns: Flags regressions whose mapped cells span multiple columns without a clear structural reason (e.g., SEs in an adjacent column), which often indicates incorrect grouping.",
-        multicol_reg_plausibility = "Implausible Multi-Column Structure: Flags multi-column regressions where every row has a value in only one column, suggesting an incorrect mapping structure.",
-        overlapping_regs = "Overlapping Regression Mappings: Flags coefficient cells that have been mapped to more than one regression within the same map version, which is almost always an error.",
-        consistent_vertical_structure = "Inconsistent Summary Stat Rows: Checks for consistent table structure by flagging summary statistics (e.g., 'Observations') that appear on different row numbers across columns of a single table."
-    )
 
     # 1. Create robust lookup from runid to code location from rme$run_df (ground truth)
     runid_to_code_lookup <- NULL
@@ -427,10 +412,30 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
             dplyr::distinct()
     }
 
-    processed_evals <- list()
+    # 3. Filter and order tests to be processed
     eval_tests <- rme$evals[sapply(rme$evals, function(x) !is.null(x) && NROW(x) > 0)]
+    if (length(eval_tests) == 0) return(NULL)
 
-    for (test_name in names(eval_tests)) {
+    tests_to_process <- names(eval_tests)
+
+    if (!is.null(opts$only_tests)) {
+      tests_to_process <- intersect(tests_to_process, opts$only_tests)
+    }
+    if (!is.null(opts$ignore_tests)) {
+      tests_to_process <- setdiff(tests_to_process, opts$ignore_tests)
+    }
+
+    if (!is.null(opts$test_order)) {
+        ordered_part <- intersect(opts$test_order, tests_to_process)
+        remaining_part <- sort(setdiff(tests_to_process, opts$test_order))
+        final_test_order <- c(ordered_part, remaining_part)
+    } else {
+        final_test_order <- sort(tests_to_process)
+    }
+
+
+    processed_evals <- list()
+    for (test_name in final_test_order) {
         df <- eval_tests[[test_name]]
         df <- dplyr::ungroup(df)
 
@@ -487,8 +492,12 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
 
                 records <- purrr::transpose(issue_df[, cols_to_keep, drop = FALSE])
 
+                description <- attr(eval_tests[[test_name]], "long_descr") %||%
+                               attr(eval_tests[[test_name]], "descr") %||%
+                               paste0("No description available for test: '", test_name, "'.")
+
                 processed_evals[[ver_id]][[tabid]][[test_name]] <- list(
-                    description = long_descriptions[[test_name]] %||% attr(df, "descr") %||% "",
+                    description = description,
                     issues = records
                 )
             }
@@ -496,7 +505,6 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source) {
     }
     return(processed_evals)
 }
-
 #' @noRd
 #' @description Robustly adds script_num to a map data frame by joining on
 #' full path and then falling back to basename.

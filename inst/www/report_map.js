@@ -428,7 +428,7 @@ function render_eval_reports(eval_data_for_version) {
 
         const tab_eval_data = eval_data_for_version[tabid];
         const accordion_id = `eval-accordion-${tabid}`;
-        let accordion_html = `<div class="panel-group eval-report-container" id="${accordion_id}" role="tablist" aria-multiselectable="true">`;
+        let accordion_html = `<div class="panel-group" id="${accordion_id}" role="tablist" aria-multiselectable="true">`;
         let test_counter = 0;
 
         for (const test_name in tab_eval_data) {
@@ -459,10 +459,20 @@ function render_eval_reports(eval_data_for_version) {
         }
         accordion_html += `</div>`;
         if (test_counter > 0) {
-            table_container.append('<h5>Mapping Evaluation Results</h5>' + accordion_html);
+            // The original code appended the h5 and the accordion as siblings.
+            // This change wraps them in a single div with the 'eval-report-container' class.
+            // This ensures clear_eval_reports() removes the entire block, preventing duplicate headers.
+            // It also makes the CSS for the h5 header apply correctly.
+            const report_html = `
+                <div class="eval-report-container">
+                    <h5>Mapping Evaluation Results</h5>
+                    ${accordion_html}
+                </div>`;
+            table_container.append(report_html);
         }
     }
 }
+
 
 function format_issues_html(test_name, issues) {
     const custom_formatters = {

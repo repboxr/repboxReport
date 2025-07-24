@@ -1,148 +1,383 @@
-Of course. Storing metadata like test descriptions directly within the data object (`rme.Rds`) is an excellent way to make your reporting tools more robust and easier to maintain. This avoids the need to update the reporting code every time a new evaluation test is added or a description is refined in the `repboxRegmap` package.
+Of course. Let's analyze your request. You want to remove the standardization of `reg_ind` to better inspect the original mapping data, even if it means losing consistent coloring across different map versions.
 
-Here are the proposed changes to `repboxReport` to implement this. The core idea is to:
-1.  Update and expand the internal list of test descriptions in `report_map.R` to include the new `missing_se_mapping` test and to align all descriptions with the more detailed versions from `rme_report.R`. This ensures reports still work correctly with older `rme.Rds` files.
-2.  Modify the logic to prioritize loading descriptions from the `rme.Rds` object itself (if present) before falling back to the internal list. This change anticipates that future versions of `rme.Rds` will contain a `long_descr` attribute for each test.
+### Would it work?
 
-This approach solves the immediate problem and provides a future-proof, automatic mechanism for handling new tests.
+Yes, removing the call to `rr_standardize_reg_ind` will work. The report will be generated successfully.
 
-Here is the modification for `rr_process_eval_data`:
+The main consequence, as you anticipated, is that the color-coding for regressions will no longer be consistent across different map versions for the same conceptual regression.
+*   If `map_A` defines a regression as `reg_ind = 1` and `map_B` defines the *same* regression as `reg_ind = 5`, they will now have different colors in the report.
+*   Conversely, if `map_A` defines regression X as `reg_ind = 1` and `map_B` defines a completely different regression Y as `reg_ind = 1`, they will now share the same color.
 
-!MODIFICATION rr_process_eval_data in report_map.R
+The logic that creates the color map (`rr_make_distinct_colors`) will simply collect all `reg_ind` values present in the loaded maps and assign a unique color to each unique number. The interactivity (clicking on cells or code to highlight links) will not be affected.
+
+Since this behavior is acceptable for your goal of inspecting the original data, I will proceed with the changes.
+
+### Other Normalizations in the Report Generation
+
+You also asked about other data normalizations. Here are the key ones that occur during the report generation. I will just describe them as requested.
+
+1.  **`script_num` Creation**: Many map files only contain a `script_file` (the filename), but the report internally uses `script_num` to reference the correct script tab. The function `rr_robust_script_num_join` systematically adds or completes the `script_num` column in all map dataframes by looking up the filename in the `stata_source` parcel. This is a crucial data enrichment step that ensures all mappings can be correctly linked to the code shown in the report.
+
+2.  **Evaluation Data Enrichment**: The function `rr_process_eval_data` processes the `rme.Rds` file. The raw evaluation tests might only reference a `map_version` or `reg_ind`. This function enriches the test data by adding precise code locations (`script_num`, `code_line`) and `runid`s. It does this by cross-referencing information from the loaded maps and a "ground truth" `run_df` from the `rme` object itself. This makes the evaluation results in the report interactive. It also standardizes some column names (e.g., `runids` to `runid`) for consistency.
+
+3.  **Ensuring Essential Columns**: The `rr_process_single_map_for_js` function ensures that all map dataframes have a standard set of columns (e.g., `runid`, `reg_ind`, `tabid`). If a column is missing from an input map file, it is added with `NA` values. This makes the downstream code more robust by preventing errors from missing columns.
+
+4.  **Standardizing Map Version Names**: In `rr_load_all_map_versions`, the names assigned to each loaded map are explicitly set to be the full `ver_id` (e.g., `model--v0`). This corrects a legacy behavior that sometimes shortened these names, ensuring that map versions can be reliably linked to evaluation data, which is also keyed by the full `ver_id`.
+
+These steps are generally important for the integrity and functionality of the final report.
+
+### Implementing the Change
+
+Below are the modifications to remove the `reg_ind` standardization. I will modify the `rr_map_report` function and effectively remove the now-unused `rr_standardize_reg_ind` function by clearing its file.
+
+!MODIFICATION rr_map_report in report_map.R
 scope = "function"
 file = "R/report_map.R"
-function_name = "rr_process_eval_data"
-description = '''Update the function to make evaluation reporting more robust.
-
-1.  **Update and expand the internal `long_descriptions` list**:
-    -   Adds the description for the new `missing_se_mapping` test.
-    -   Updates all other descriptions to be more detailed and consistent with those in `repboxRegmap`, ensuring clarity in the report.
-2.  **Implement dynamic description loading**:
-    -   The function now first attempts to load a `long_descr` attribute from the test data within the `rme.Rds` object.
-    -   If not found, it falls back to the internal (now updated) `long_descriptions` list.
-    -   This makes the reporting logic automatically adapt to new tests and descriptions provided in future `rme.Rds` files, answering the user's request for a more automated system.'''
+function_name = "rr_map_report"
+description = '''Remove the call to `rr_standardize_reg_ind` to disable the standardization of regression indices. This allows viewing the original `reg_ind` values from the map data, at the cost of losing consistent coloring for the same regression across different map versions.'''
 ---
 ```r
-#' Process rme$evals data for the report
-#' @param rme The loaded rme.Rds object
-#' @param all_map_types The loaded map data, used to resolve runids to code locations
-#' @param stata_source The stata_source parcel, used for robust script_num joins
-#' @return A nested list structured for JSON output
-#' @noRd
-rr_process_eval_data <- function(rme, all_map_types, stata_source) {
-    restore.point("rr_process_eval_data")
-    if (is.null(rme) || is.null(rme$evals)) return(NULL)
+#' Creates an interactive HTML report to visualize maps
+#'
+#' This function generates a self-contained HTML report that visualizes the
+#' maps between Stata do-files and regression tables. The report features
+#' static color-coding for regression cells and interactive highlighting.
+#'
+#' @param project_dir The root directory of the project.
+#' @param output_dir Directory for the report. Defaults to 'reports' in project_dir.
+#' @param output_file The name of the HTML report file.
+#' @param doc_type The document type (e.g., "art", "app1").
+#' @param opts A list of options, typically generated by `rr_map_report_opts()`.
+#' @return The path to the generated HTML report file.
+#' @export
+rr_map_report <- function(project_dir,
+                          output_dir = file.path(project_dir, "reports"),
+                          output_file = "map_report.html",
+                          doc_type = "art",
+                          opts = NULL) {
+  restore.point("rr_map_report")
+  # --- 0. Check dependencies & Options ---
+  pkgs <- c("dplyr", "tidyr", "stringi", "htmltools", "jsonlite", "purrr", "randtoolbox")
+  for (pkg in pkgs) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      stop(paste("Please install the '", pkg, "' package."), call. = FALSE)
+    }
+  }
 
-    # Descriptions for each test type, to be shown in the UI.
-    # This list is updated and serves as a fallback for older rme.Rds files
-    # that do not contain the descriptions as attributes.
-    long_descriptions <- list(
-        runids_differ = "Discrepancy Across Map Versions: This test identifies cells that are mapped to different regression 'runid's by different AI mapping versions. This is a key indicator of disagreement between models and points to areas of uncertainty.",
-        invalid_runids = "Invalid 'runid' Mapping: This test flags mappings that point to a 'runid' that does not exist in the project's execution log ('run_df'). This is a critical integrity error, as the mapped regression output cannot be found.",
-        invalid_cellids = "Invalid 'cellid' Mapping: This test flags mappings that reference a 'cellid' that does not exist in the parsed table data ('cell_df'). This is a critical integrity error, indicating a hallucinated or malformed cell reference from the AI.",
-        non_reg_cmd = "Mapping to Non-Regression Command: This test identifies cells mapped to a Stata command that is not a primary regression command (e.g., 'test', 'margins', 'summarize'). This is not necessarily an error—post-estimation results are often included in tables—but serves as an important note. The report shows the command type and the 'runid' of the last preceding regression.",
-        coef_se_match = "Value Mismatch between Table and Code: This is a core value-based check. It compares numeric values from the table (identified as coefficient/standard error pairs) against the results from the mapped regression's 'regcoef' output. A match is considered perfect if the code output, rounded to the number of decimal places shown in the table, equals the table value. Issues can be 'no_coef_match', 'no_match_perhaps_wrong_sign', 'no_paren_match', or 'rounding_error'.",
-        single_col_reg = "Regression Spans Multiple Columns: Regressions are typically presented in a single column. This test flags regressions whose mapped cells span multiple columns without a clear structural reason (like having standard errors in an adjacent column). This often indicates that cells from different regressions have been incorrectly grouped together.",
-        multicol_reg_plausibility = "Implausible Multi-Column Structure: For a regression that legitimately spans multiple columns, we expect to find rows with numbers in more than one of those columns. This test flags multi-column regressions where every row only has a value in one column, suggesting a 'slip' where different rows of the same conceptual regression were incorrectly assigned to different columns.",
-        overlapping_regs = "Overlapping Regression Mappings: This test flags cells identified as coefficients that have been mapped to more than one regression within the same map version. This is almost always an error, as a single coefficient should belong to only one regression specification.",
-        consistent_vertical_structure = "Inconsistent Summary Stat Rows: This test checks for consistent table structure. It identifies summary statistics (like 'Observations' or 'R-squared') by keywords and flags cases where the same statistic appears on different row numbers across the columns of a single table. This points to a potentially messy or inconsistent table layout or a mapping error.",
-        missing_se_mapping = "Unmapped Standard Error: This test flags cases where a mapped coefficient cell has an associated standard error (a value in parentheses, typically below the coefficient) that was not included in the regression mapping. It also reports whether the numeric value of that unmapped SE would have been a correct match for the regression's output, helping to distinguish simple mapping omissions from more complex issues."
-    )
+  if (is.null(opts)) {
+    opts <- rr_map_report_opts()
+  }
 
-    # 1. Create robust lookup from runid to code location from rme$run_df (ground truth)
-    runid_to_code_lookup <- NULL
-    if ("run_df" %in% names(rme) && !is.null(rme$run_df)) {
-        runid_to_code_lookup <- rme$run_df %>%
-            dplyr::select(runid, script_num, code_line) %>%
-            dplyr::filter(!is.na(runid)) %>%
-            dplyr::distinct(runid, .keep_all = TRUE)
+  # Decide on show_wrong_number_report if it's NA
+  rme_file_for_check <- file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
+  if (is.na(opts$show_wrong_number_report)) {
+      opts$show_wrong_number_report <- !file.exists(rme_file_for_check)
+  }
+
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+
+  # --- 1. Setup asset paths ---
+  assets_dir <- file.path(output_dir, "shared")
+  if (!dir.exists(assets_dir)) {
+    dir.create(assets_dir, recursive = TRUE)
+  }
+
+  # --- 2. Load data ---
+  cat("\nLoading data...")
+  parcels <- repboxDB::repdb_load_parcels(project_dir, c("stata_source", "stata_run_cmd", "stata_run_log", "stata_cmd"))
+
+  fp_dir <- file.path(project_dir, "fp", paste0("prod_", doc_type))
+  tab_main_info <- rai_pick_tab_ver(fp_dir, "tab_main")
+  if(nrow(tab_main_info) == 0) {
+      stop("Could not find a suitable 'tab_main' product for doc_type '", doc_type, "'")
+  }
+  tab_main <- fp_load_prod_df(tab_main_info$ver_dir)
+
+  cat("\nLoading maps...")
+  all_map_types <- list()
+  prod_id = "map_reg_run"
+  for (prod_id in opts$map_prod_ids) {
+    map_list <- rr_load_all_map_versions(project_dir, doc_type, prod_id = prod_id)
+    if (length(map_list) > 0) {
+      all_map_types[[prod_id]] <- map_list
+    }
+  }
+  if (length(all_map_types) == 0) {
+    warning("No map versions found for any prod_id in opts$map_prod_ids. The report will be generated without interactive links.")
+  }
+
+  # --- 3. Generate HTML & JS components ---
+  cat("\nGenerating HTML components...")
+
+  # Pre-compute conflict information for tooltips.
+  # A conflict exists if a cell_id maps to different script/line combinations
+  # across different map versions, or if it has a wrong_number_case.
+  cell_conflict_data <- {
+    all_maps_flat <- unlist(all_map_types, recursive = FALSE)
+    all_maps_flat_df <- purrr::map_dfr(all_maps_flat, ~.x, .id = "map_version_id")
+
+    # 1. Mapping conflicts
+    mapping_conflict_msgs <- list()
+    if (length(all_maps_flat) > 1 && nrow(all_maps_flat_df) > 0) {
+      conflict_df <- all_maps_flat_df %>%
+        rr_robust_script_num_join(parcels$stata_source$script_source) %>%
+        dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
+        dplyr::select(map_version_id, script_num, code_line, cell_ids) %>%
+        dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
+        tidyr::unnest(cell_id) %>%
+        dplyr::mutate(cell_id = trimws(cell_id)) %>%
+        dplyr::filter(cell_id != "") %>%
+        dplyr::select(map_version_id, cell_id, script_num, code_line) %>%
+        dplyr::distinct()
+
+      if (nrow(conflict_df) > 0) {
+          conflict_summary <- conflict_df %>%
+            dplyr::group_by(cell_id) %>%
+            dplyr::mutate(target_key = paste(script_num, code_line, sep = ":")) %>%
+            dplyr::summarise(
+              num_unique_targets = dplyr::n_distinct(target_key),
+              conflict_info = if (dplyr::n_distinct(target_key) > 1) {
+                list(dplyr::tibble(map_version_id = map_version_id, script_num = script_num, code_line = code_line))
+              } else {
+                list(NULL)
+              },
+              .groups = "drop"
+            ) %>%
+            dplyr::filter(num_unique_targets > 1)
+
+          if (nrow(conflict_summary) > 0) {
+            mapping_conflict_msgs <- setNames(
+              lapply(conflict_summary$conflict_info, function(info_df) {
+                details <- info_df %>%
+                  dplyr::distinct(map_version_id, script_num, code_line) %>%
+                  dplyr::mutate(msg = paste0(map_version_id, " -> S", script_num, " L", code_line)) %>%
+                  dplyr::pull(msg)
+                paste0("Note: Mapped differently in other versions:\n - ", paste(details, collapse="\n - "))
+              }),
+              conflict_summary$cell_id
+            )
+          }
+      }
     }
 
-    # 2. Create lookup from map info to get runid for tests that don't have it
-    all_maps_flat_df <- purrr::map_dfr(unlist(all_map_types, recursive = FALSE), ~ if(!is.null(.x) && nrow(.x)>0) .x else NULL, .id = "map_version_id")
-    reg_ind_to_runid_lookup <- NULL
-    if (nrow(all_maps_flat_df) > 0) {
-        reg_ind_to_runid_lookup <- all_maps_flat_df %>%
-            dplyr::select(map_version_id, tabid, reg_ind, runid) %>%
-            dplyr::filter(!is.na(reg_ind), !is.na(runid)) %>%
-            dplyr::distinct()
-    }
+    # 2. Wrong number conflicts
+    wrong_num_msgs <- list()
+    if (isTRUE(opts$show_wrong_number_report) && "wrong_number_cases" %in% names(all_maps_flat_df) && nrow(all_maps_flat_df) > 0) {
+        wnc_df <- all_maps_flat_df %>%
+            dplyr::select(map_version_id, wrong_number_cases) %>%
+            dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
 
-    processed_evals <- list()
-    eval_tests <- rme$evals[sapply(rme$evals, function(x) !is.null(x) && NROW(x) > 0)]
+        if (nrow(wnc_df) > 0) {
+            wrong_num_conflict_df <- wnc_df %>%
+                tidyr::unnest(cols = wrong_number_cases) %>%
+                dplyr::select(map_version_id, cell_id) %>%
+                dplyr::distinct() %>%
+                dplyr::filter(!is.na(cell_id)) %>%
+                dplyr::group_by(cell_id) %>%
+                dplyr::summarise(versions = paste(sort(unique(map_version_id)), collapse=", "), .groups="drop")
 
-    for (test_name in names(eval_tests)) {
-        df <- eval_tests[[test_name]]
-        df <- dplyr::ungroup(df)
-
-        if (!"map_version" %in% names(df)) next
-
-        df$ver_id <- df$map_version
-        df <- dplyr::filter(df, !is.na(ver_id))
-        if(nrow(df) == 0) next
-
-        # Standardize runid column if it's named 'runids'
-        if ("runids" %in% names(df) && !"runid" %in% names(df)) {
-             df <- df %>% dplyr::rename(runid = runids)
-        }
-
-        # Ensure runid is numeric for joining
-        if ("runid" %in% names(df) && !is.numeric(df$runid)) {
-            df$runid <- suppressWarnings(as.numeric(as.character(df$runid)))
-        }
-
-        # If df has reg_ind but no runid, try to get runid from maps
-        if (!"runid" %in% names(df) && "reg_ind" %in% names(df) && !is.null(reg_ind_to_runid_lookup)) {
-            df$reg_ind <- as.integer(df$reg_ind)
-            df <- dplyr::left_join(df, reg_ind_to_runid_lookup, by = c("map_version" = "map_version_id", "tabid", "reg_ind"))
-        }
-
-        # If df now has runid, join with ground truth to get code location.
-        # This join will not filter out rows if runid is NA, which is what we want.
-        if ("runid" %in% names(df) && !is.null(runid_to_code_lookup)) {
-            df <- df %>%
-                dplyr::left_join(runid_to_code_lookup, by = "runid")
-        }
-
-        # Standardize cellids: if only cellid exists, copy it to cellids for the JS
-        if ("cellid" %in% names(df) && !"cellids" %in% names(df)) {
-            df$cellids <- df$cellid
-        }
-
-        # Convert all columns to character to avoid JSON issues
-        is_list_col <- sapply(df, is.list)
-        df[!is_list_col] <- lapply(df[!is_list_col], as.character)
-
-        df_split_ver <- split(df, df$ver_id)
-
-        for (ver_id in names(df_split_ver)) {
-            ver_df <- df_split_ver[[ver_id]]
-            if (!"tabid" %in% names(ver_df)) next
-
-            ver_df$tabid <- as.character(ver_df$tabid)
-            df_split_tab <- split(ver_df, ver_df$tabid)
-
-            for (tabid in names(df_split_tab)) {
-                issue_df <- df_split_tab[[tabid]]
-                cols_to_keep <- setdiff(names(issue_df), c("map_version", "ver_id", "tabid"))
-
-                records <- purrr::transpose(issue_df[, cols_to_keep, drop = FALSE])
-
-                # Get description: prefer 'long_descr' attr from rme.Rds,
-                # fallback to hardcoded list, then short 'descr' attr.
-                description <- attr(df, "long_descr") %||%
-                               long_descriptions[[test_name]] %||%
-                               attr(df, "descr") %||%
-                               "No description available for this test."
-
-                processed_evals[[ver_id]][[tabid]][[test_name]] <- list(
-                    description = description,
-                    issues = records
+            if (nrow(wrong_num_conflict_df) > 0) {
+                wrong_num_msgs <- setNames(
+                    paste0("Note: Has wrong number discrepancy in version(s): ", wrong_num_conflict_df$versions),
+                    wrong_num_conflict_df$cell_id
                 )
             }
         }
     }
-    return(processed_evals)
+
+    # 3. Combine messages
+    all_conflict_cells <- unique(c(names(mapping_conflict_msgs), names(wrong_num_msgs)))
+    if (length(all_conflict_cells) > 0) {
+        li = lapply(all_conflict_cells, function(cid) {
+          restore.point("ssfk")
+          msg1 = msg2 = ""
+          if (cid %in% names(mapping_conflict_msgs)) {
+            msg1 <- mapping_conflict_msgs[[cid]]
+          }
+          if (cid %in% names(wrong_num_msgs)) {
+            msg2 <- wrong_num_msgs[[cid]]
+          }
+          # Filter NULLs and join with newline
+          paste(c(msg1, msg2)[!sapply(c(msg1, msg2), is.null)], collapse="\n")
+        })
+        li = setNames(li,all_conflict_cells)
+    } else {
+        li =list()
+    }
+    li
+  }
+  js_conflict_data <- jsonlite::toJSON(cell_conflict_data, auto_unbox = TRUE)
+
+
+  # Generate color map for consistent colors across all loaded maps
+  all_map_dfs <- unlist(all_map_types, recursive = FALSE)
+  all_reg_inds <- unique(unlist(lapply(all_map_dfs, function(df) if("reg_ind" %in% names(df)) unique(df$reg_ind) else NULL)))
+  all_reg_inds <- stats::na.omit(all_reg_inds)
+  reg_color_map <- rr_make_distinct_colors(length(all_reg_inds))
+  names(reg_color_map) <- all_reg_inds
+
+
+
+  # Add a script_file column for easier access
+  parcels$stata_source$script_source$script_file <- basename(parcels$stata_source$script_source$file_path)
+
+  do_panel_html <- rr_make_do_panel_html(
+    stata_source = parcels$stata_source$script_source,
+    stata_cmd = parcels$stata_cmd$stata_cmd,
+    stata_run_cmd = parcels$stata_run_cmd$stata_run_cmd,
+    stata_run_log = parcels$stata_run_log$stata_run_log,
+    opts = opts,
+    all_map_types = all_map_types
+  )
+
+  tab_panel_html <- rr_make_tab_panel_html(tab_main)
+  controls_html <- rr_make_controls_html(all_map_types)
+
+  # --- 4. Write JS and CSS assets ---
+  cat("\nWriting JS and CSS assets...")
+  rr_copy_pkg_assets(output_dir)
+
+  # --- 5. Generate JS data and Assemble final HTML report ---
+
+  # Conditionally generate map data (embedded vs. external)
+  js_maps_data <- "{}"
+  js_manifest_data <- "{}"
+
+  if (isTRUE(opts$embed_data)) {
+    cat("\nGenerating and embedding map data...")
+    processed_types <- purrr::map(all_map_types, function(map_list_for_type) {
+        purrr::map(map_list_for_type, function(map_df) {
+            rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
+        })
+    })
+    js_maps_data <- jsonlite::toJSON(processed_types, auto_unbox = TRUE, null = "null", na = "null")
+  } else {
+    cat("\nGenerating external JSON files for map data...")
+    maps_data_dir <- file.path(output_dir, "maps_data")
+    if (!dir.exists(maps_data_dir)) dir.create(maps_data_dir, recursive = TRUE)
+
+    manifest <- list()
+    for (map_type in names(all_map_types)) {
+        manifest[[map_type]] <- list()
+        for (version_id in names(all_map_types[[map_type]])) {
+            map_df <- all_map_types[[map_type]][[version_id]]
+            processed_map_list <- rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
+            json_content <- jsonlite::toJSON(processed_map_list, auto_unbox = TRUE, null = "null", na = "null")
+
+            file_name <- paste0(map_type, "_", version_id, ".json")
+            file_path <- file.path(maps_data_dir, file_name)
+            relative_path <- file.path("maps_data", file_name)
+
+            writeLines(json_content, file_path)
+            manifest[[map_type]][[version_id]] <- relative_path
+        }
+    }
+    js_manifest_data <- jsonlite::toJSON(manifest, auto_unbox = TRUE)
+    cat("\n\nExternal JSONs generated. Note: This report must now be viewed via a web server.")
+    cat("\nYou can start one from R with: servr::httd('", normalizePath(output_dir, mustWork=FALSE), "')")
+  }
+
+  # --- 5b. Process and generate evaluation data from rme.Rds ---
+  js_evals_data <- "{}"
+  js_eval_manifest_data <- "{}"
+  rme_file <- file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
+
+  processed_eval_data <- NULL
+  if (file.exists(rme_file)) {
+      cat("\nLoading and processing evaluation data from rme.Rds...")
+      tryCatch({
+          rme <- readRDS(rme_file)
+          processed_eval_data <- rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source, opts)
+          if (!is.null(processed_eval_data) && length(processed_eval_data) > 0) {
+            cat("\nSuccessfully processed evaluation data.")
+          } else {
+            cat("\nEvaluation data found, but no applicable issues to report after processing.")
+          }
+      }, error = function(e) {
+          warning("Could not load or process rme.Rds: ", e$message)
+      })
+    } else {
+      cat("\nNo evaluation data file (rme.Rds) found, skipping.")
+  }
+
+  if (!is.null(processed_eval_data)) {
+      if (isTRUE(opts$embed_data)) {
+          js_evals_data <- jsonlite::toJSON(processed_eval_data, auto_unbox = TRUE, null = "null", na = "null")
+      } else {
+          eval_data_dir <- file.path(output_dir, "eval_data")
+          if (!dir.exists(eval_data_dir)) dir.create(eval_data_dir, recursive = TRUE)
+
+          manifest <- list()
+          for (version_id in names(processed_eval_data)) {
+              json_content <- jsonlite::toJSON(processed_eval_data[[version_id]], auto_unbox = TRUE, null = "null", na = "null")
+
+              file_name <- paste0("eval_", version_id, ".json")
+              file_path <- file.path(eval_data_dir, file_name)
+              relative_path <- file.path("eval_data", file_name)
+
+              writeLines(json_content, file_path)
+              manifest[[version_id]] <- relative_path
+          }
+          js_eval_manifest_data <- jsonlite::toJSON(manifest, auto_unbox = TRUE)
+      }
+  }
+
+
+  cat("\nAssembling final HTML report...")
+  html_content <- htmltools::tagList(
+    htmltools::tags$head(
+      htmltools::tags$meta(charset = "UTF-8"),
+      htmltools::tags$meta(`http-equiv` = "X-UA-Compatible", content = "IE=edge"),
+      htmltools::tags$meta(name="viewport", content="width=device-width, initial-scale=1"),
+      htmltools::tags$title(paste("map Report:", basename(project_dir))),
+      htmltools::tags$link(href = "shared/bootstrap.min.css", rel = "stylesheet"),
+      htmltools::tags$link(href = "shared/repbox.css", rel = "stylesheet")
+    ),
+    htmltools::tags$body(
+      htmltools::tags$div(class = "container-fluid",
+        htmltools::HTML(controls_html),
+        htmltools::tags$div(class = "row", style = "height: 95vh;",
+          htmltools::tags$div(id = "do-col-div", class = "col-sm-7",
+            htmltools::HTML(do_panel_html)
+          ),
+          htmltools::tags$div(id = "tabs-col-div", class = "col-sm-5",
+            htmltools::HTML(tab_panel_html)
+          )
+        )
+      ),
+      htmltools::tags$script(src = "shared/jquery.min.js"),
+      htmltools::tags$script(src = "shared/bootstrap.min.js"),
+      htmltools::tags$script(htmltools::HTML(paste0("var data_is_embedded = ", tolower(isTRUE(opts$embed_data)), ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var show_wrong_number_report_opt = ", tolower(isTRUE(opts$show_wrong_number_report)), ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var all_maps = ", js_maps_data, ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var report_manifest = ", js_manifest_data, ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var cell_conflict_data = ", js_conflict_data, ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var all_evals = ", js_evals_data, ";"))),
+      htmltools::tags$script(htmltools::HTML(paste0("var eval_manifest = ", js_eval_manifest_data, ";"))),
+      htmltools::tags$script(src = "shared/report_map.js")
+    )
+  )
+
+  report_path <- file.path(output_dir, output_file)
+  htmltools::save_html(html_content, file = report_path)
+
+  message(paste("\nReport generated successfully at:", report_path))
+  return(invisible(report_path))
 }
 ```
-!END_MODIFICATION rr_process_eval_data in report_map.R
+!END_MODIFICATION rr_map_report in report_map.R
+
+!MODIFICATION standardize_reg_ind.R
+scope = "file"
+file = "R/standardize_reg_ind.R"
+is_new_file = false
+description = '''This file is no longer used and is now obsolete. The function `rr_standardize_reg_ind` was removed from the report generation process to preserve original `reg_ind` values from the source mapping files.'''
+---
+```r
+# This file is intentionally left empty.
+# The function rr_standardize_reg_ind which was previously in this file is no longer used
+# in the report generation process and has been removed.
+```
+!END_MODIFICATION standardize_reg_ind.R
