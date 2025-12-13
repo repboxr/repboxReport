@@ -1,0 +1,161 @@
+opt_prompt_file = "my_prompt.Rmd"
+
+project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
+schema_dir = "/home/rstudio/repbox/gemini/repboxAI/inst/prod_schemas"
+report_dir = "~/repbox/projects_gha_new/aejapp_10_4_6/reports"
+repboxHtml_dir = "/home/rstudio/repbox/repboxHtml"
+repboxRegmap_dir = "/home/rstudio/repbox/repboxRegmap"
+
+
+include_files = '''
+
+'''
+exclude_files = '''
+*.toml
+'''
+
+template = '''
+
+Below are relevant files from my R project.
+
+################################################
+# R project DESCRIPTION file (repboxReport)
+################################################
+
+{{DESCRIPTION}}
+
+################################################
+# R code files: (repboxReport)
+################################################
+
+{{R}}
+
+################################################
+# js and css files in inst/www (repboxReport)
+################################################
+
+{{inst_www}}
+
+
+####################################################
+# From repboxRegmap
+# Example report Rds file: rme.RDS and markdown report
+# Code from repboxRegmap to make markdown report
+####################################################
+
+{{map_reg}}
+
+
+##################################
+# Coding Style
+##################################
+
+When you write R code:
+
+- Prefer stringi functions for string operations (exception paste0 is fine)
+- Prefer = as assignment operator over <-
+- DO NOT use `.data$col` syntax within dplyr verbs e.g. do not write `filter(.data$x>0)` just write `filter(x>0)` instead.
+
+##################################
+# Your Task
+##################################
+
+Improve the map report.
+
+'''
+
+
+
+file_template = '''
+
+# FILE: {{filename}}
+```
+{{filetext}}
+```
+# END OF FILE: {{filename}}
+
+-----------------------------------------------------------
+'''
+
+
+[[repdb]]
+
+include_files = '''
+{{project_dir}}/repdb/stata_source.Rds
+{{project_dir}}/repdb/stata_run_cmd.Rds
+{{project_dir}}/repdb/stata_cmd.Rds
+{{project_dir}}/repdb/stata_run_log.Rds
+'''
+
+[[map_reg]]
+
+include_files = '''
+{{project_dir}}/fp/eval_art/rme.Rds
+{{project_dir}}/fp/eval_art/rme_report.md
+{{repboxRegmap_dir}}/R/rme_report.R
+'''
+
+
+group_template = '''
+################################################
+# Readme file
+################################################
+{{files}}
+'''
+
+
+[[schemas]]
+
+include_files = '''
+{{schema_dir}}/map_reg_run.json
+{{schema_dir}}/map_reg_static.json
+{{schema_dir}}/map_inv_reg_run.json
+{{schema_dir}}/tab_html.json
+'''
+
+[[report_html]]
+
+include_files = '''
+{{report_dir}}/map_report.html
+'''
+
+
+################################################
+# Special handling for R code
+################################################
+[[R]]
+include_files  = '''
+R/*.R
+R/*.r
+'''
+
+[[inst_www]]
+include_files  = '''
+inst/www/*.*
+'''
+
+
+
+[[README]]
+include_files = "README.md"
+group_template = '''
+################################################
+# Readme file
+################################################
+{{files}}
+'''
+file_template = '''
+```md
+{{filetext}}
+```
+'''
+
+[[DESCRIPTION]]
+include_files = "DESCRIPTION"
+file_template = '''
+```
+{{filetext}}
+```
+'''
+
+

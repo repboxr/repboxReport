@@ -1,47 +1,5 @@
-!MODIFICATION add webshot2 to DESCRIPTION
-scope = "lines"
-file = "DESCRIPTION"
-insert_after_lines = "         dplyr, tidyr, purrr, jsonlite, randtoolbox, FuzzyProduction, repboxAI"
-description = '''Add webshot2 as an optional dependency for rendering per-table PNG screenshots.'''
----------------------------------------------------------------------------------------------------
-
-```
-Suggests: webshot2
-```
-
-!END_MODIFICATION add webshot2 to DESCRIPTION
-
-!MODIFICATION add rr_single_table.R
-scope = "file"
-file = "R/rr_single_table.R"
-is_new_file = true
-description = '''Add rr_single_table to generate per-table HTML (minimal for PNG rendering + full with issues), using the same reg color coding and optional wrong-number + evaluation issues rendering.'''
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
 ```r
-#' Create per-table HTML (and optional PNG) snapshots from the map report inputs
-#'
-#' Generates, for each requested table id, two HTML files:
-#' 1) a minimal HTML that only contains the colored table (suitable for webshot PNG),
-#' 2) a larger HTML that additionally lists issues (wrong-number cases + evaluation issues),
-#'    respecting opts$only_tests and opts$ignore_tests.
-#'
-#' Optionally creates a PNG screenshot of the colored table using webshot2.
-#'
-#' @param project_dir The root directory of the project.
-#' @param tabid One or more table ids (character or numeric).
-#' @param output_dir Directory for outputs. Defaults to 'reports_tables' in project_dir.
-#' @param doc_type Document type (e.g., "art", "app1").
-#' @param opts Options list, typically from rr_map_report_opts(). only_tests/ignore_tests are respected.
-#' @param map_prod_id Which map product id to use for coloring. Defaults to the first in opts$map_prod_ids.
-#' @param map_version_id Which map version id to use. If NULL, a deterministic "latest" is chosen (lexicographically last).
-#' @param table_png Logical. If TRUE, write a PNG of the colored table using webshot2.
-#' @param png_zoom Zoom factor for PNG rendering.
-#' @param png_delay Delay (seconds) before screenshot.
-#' @param png_vwidth Viewport width for rendering.
-#' @param png_vheight Viewport height for rendering.
-#' @return Invisibly returns a data.frame with produced file paths.
-#' @export
+# START_BLOCK rr_single_table
 rr_single_table = function(project_dir,
   tabid,
   output_dir = file.path(project_dir, "reports_tables"),
@@ -53,15 +11,15 @@ rr_single_table = function(project_dir,
   png_zoom = 2,
   png_delay = 0.2,
   png_vwidth = 1400,
-  png_vheight = 900
+  png_vheight = 900,
+  plain_html_with_issue = FALSE,
+  mark_issue_cells_table_only = FALSE
 ) {
   restore.point("rr_single_table")
 
   pkgs = c("dplyr", "tidyr", "stringi", "htmltools", "jsonlite", "purrr", "randtoolbox")
   for (pkg in pkgs) {
-    if (!requireNamespace(pkg, quietly = TRUE)) {
-      stop(paste0("Please install the '", pkg, "' package."), call. = FALSE)
-    }
+    library(pkg, character.only = TRUE)
   }
 
   if (isTRUE(table_png)) {
@@ -75,7 +33,6 @@ rr_single_table = function(project_dir,
   }
 
   tabids = as.character(tabid)
-  if (length(tabids) == 0) stop("tabid must contain at least one table id.", call. = FALSE)
 
   if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
@@ -97,6 +54,9 @@ rr_single_table = function(project_dir,
   tab_main = fp_load_prod_df(tab_main_info$ver_dir)
 
   tab_main$tabid = as.character(tab_main$tabid)
+
+  if (length(tabids) == 0) tabids = unique(tab_main$tabid)
+
   tab_rows = dplyr::filter(tab_main, tabid %in% tabids)
   missing_tabs = setdiff(tabids, tab_rows$tabid)
   if (length(missing_tabs) > 0) {
@@ -181,6 +141,15 @@ rr_single_table = function(project_dir,
       }
     }
 
+    issue_cellids_for_table_only = NULL
+    if (isTRUE(mark_issue_cells_table_only)) {
+      issue_cellids_for_table_only = rr_collect_issue_cellids(
+        mapping = mapping,
+        show_wrong_number = isTRUE(opts$show_wrong_number_report),
+        eval_for_tab = eval_for_tab
+      )
+    }
+
     base_name = rr_safe_filename(paste0("tab", tabid_i, "__", map_prod_id, "__", map_version_id))
     file_table_only = file.path(output_dir, paste0(base_name, "__table_only.html"))
     file_with_issues = file.path(output_dir, paste0(base_name, "__with_issues.html"))
@@ -192,17 +161,29 @@ rr_single_table = function(project_dir,
       mapping = mapping,
       show_wrong_number = isTRUE(opts$show_wrong_number_report),
       include_issues = FALSE,
-      eval_for_tab = NULL
+      eval_for_tab = NULL,
+      issue_cellids = issue_cellids_for_table_only,
+      mark_issue_cells = isTRUE(mark_issue_cells_table_only)
     )
 
-    html_issues = rr_make_single_table_html(
-      tabtitle = row$tabtitle,
-      tabhtml = row$tabhtml,
-      mapping = mapping,
-      show_wrong_number = isTRUE(opts$show_wrong_number_report),
-      include_issues = TRUE,
-      eval_for_tab = eval_for_tab
-    )
+    if (isTRUE(plain_html_with_issue)) {
+      html_issues = rr_make_single_table_plain_issues_html(
+        tabtitle = row$tabtitle,
+        tabhtml = row$tabhtml,
+        mapping = mapping,
+        show_wrong_number = isTRUE(opts$show_wrong_number_report),
+        eval_for_tab = eval_for_tab
+      )
+    } else {
+      html_issues = rr_make_single_table_html(
+        tabtitle = row$tabtitle,
+        tabhtml = row$tabhtml,
+        mapping = mapping,
+        show_wrong_number = isTRUE(opts$show_wrong_number_report),
+        include_issues = TRUE,
+        eval_for_tab = eval_for_tab
+      )
+    }
 
     htmltools::save_html(html_only, file = file_table_only)
     htmltools::save_html(html_issues, file = file_with_issues)
@@ -255,18 +236,20 @@ rr_single_table = function(project_dir,
   message(paste0("rr_single_table wrote outputs to: ", normalizePath(output_dir, mustWork = FALSE)))
   invisible(res)
 }
+# END_BLOCK rr_single_table
+```
 
-# ---- Internal helpers ----
-
-rr_safe_filename = function(x) {
-  x = as.character(x)
-  x = stringi::stri_replace_all_regex(x, "[^A-Za-z0-9_\\-\\.]+", "_")
-  x = stringi::stri_replace_all_regex(x, "_{2,}", "_")
-  x = stringi::stri_replace_all_regex(x, "^_+|_+$", "")
-  x
-}
-
-rr_make_single_table_html = function(tabtitle, tabhtml, mapping, show_wrong_number = TRUE, include_issues = FALSE, eval_for_tab = NULL) {
+```r
+# START_BLOCK rr_make_single_table_html
+rr_make_single_table_html = function(tabtitle,
+  tabhtml,
+  mapping,
+  show_wrong_number = TRUE,
+  include_issues = FALSE,
+  eval_for_tab = NULL,
+  issue_cellids = NULL,
+  mark_issue_cells = FALSE
+) {
   restore.point("rr_make_single_table_html")
 
   reg_info_json = jsonlite::toJSON(mapping$reg_info %||% list(), auto_unbox = TRUE, null = "null", na = "null")
@@ -279,6 +262,9 @@ rr_make_single_table_html = function(tabtitle, tabhtml, mapping, show_wrong_numb
     issues_pack = rr_build_issues_block(mapping = mapping, show_wrong_number = show_wrong_number, eval_for_tab = eval_for_tab)
     issues_html = issues_pack$issues_html
     issues_cellids_json = issues_pack$issues_cellids_json
+  } else if (isTRUE(mark_issue_cells) && !is.null(issue_cellids) && length(issue_cellids) > 0) {
+    issue_cellids = unique(stats::na.omit(as.character(issue_cellids)))
+    issues_cellids_json = jsonlite::toJSON(as.list(issue_cellids), auto_unbox = TRUE, null = "null", na = "null")
   }
 
   css = rr_single_table_css()
@@ -315,7 +301,11 @@ rr_make_single_table_html = function(tabtitle, tabhtml, mapping, show_wrong_numb
     )
   )
 }
+# END_BLOCK rr_make_single_table_html
+```
 
+```r
+# START_BLOCK rr_single_table_css
 rr_single_table_css = function() {
   paste0(
     "html, body { margin: 0; padding: 0; background: #ffffff; }\n",
@@ -329,7 +319,7 @@ rr_single_table_css = function() {
     ".art-tab-div table th { background-color: #f5f5f5; }\n",
     ".statically-colored { transition: background-color 0.3s ease; }\n",
     ".wrong-number-cell { }\n",
-    ".issue-cell { outline: 2px solid #dc3545 !important; outline-offset: -2px; }\n",
+    ".issue-cell { box-shadow: inset 0 0 0 2px #dc3545 !important; }\n",
     ".rr-issues { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif; ",
     "font-size: 13px; padding: 10px 12px; border-top: 1px solid #ddd; margin-top: 6px; }\n",
     ".rr-issues h5 { margin: 0 0 8px 0; font-size: 15px; }\n",
@@ -341,199 +331,196 @@ rr_single_table_css = function() {
     ".rr-badge { display: inline-block; padding: 1px 6px; border-radius: 10px; background: #eef; margin-left: 6px; font-size: 12px; }\n"
   )
 }
+# END_BLOCK rr_single_table_css
+```
 
-rr_single_table_js = function(reg_info_json, wrong_info_json, show_wrong_number = TRUE, issues_cellids_json = "[]") {
-  show_flag = if (isTRUE(show_wrong_number)) "true" else "false"
-  paste0(
-    "(function(){\n",
-    "  var reg_info = ", reg_info_json, " || {};\n",
-    "  var wrong_info = ", wrong_info_json, " || [];\n",
-    "  var show_wrong = ", show_flag, ";\n",
-    "  var issue_cellids = ", issues_cellids_json, " || [];\n",
-    "\n",
-    "  function apply_static_coloring() {\n",
-    "    for (var regid in reg_info) {\n",
-    "      if (!reg_info.hasOwnProperty(regid)) continue;\n",
-    "      var info = reg_info[regid];\n",
-    "      if (!info || !info.color || !info.cell_ids) continue;\n",
-    "      var ids = String(info.cell_ids).split(',');\n",
-    "      for (var i = 0; i < ids.length; i++) {\n",
-    "        var cid = ids[i].trim();\n",
-    "        if (!cid) continue;\n",
-    "        var el = document.getElementById(cid);\n",
-    "        if (!el) continue;\n",
-    "        el.style.setProperty('background-color', info.color, 'important');\n",
-    "        el.classList.add('statically-colored');\n",
-    "      }\n",
-    "    }\n",
-    "  }\n",
-    "\n",
-    "  function apply_wrong_number_info() {\n",
-    "    if (!show_wrong) return;\n",
-    "    if (!wrong_info || !Array.isArray(wrong_info) || wrong_info.length === 0) return;\n",
-    "\n",
-    "    var cell_to_color = {};\n",
-    "    for (var regid in reg_info) {\n",
-    "      if (!reg_info.hasOwnProperty(regid)) continue;\n",
-    "      var info = reg_info[regid];\n",
-    "      if (!info || !info.color || !info.cell_ids) continue;\n",
-    "      String(info.cell_ids).split(',').forEach(function(x){ cell_to_color[x.trim()] = info.color; });\n",
-    "    }\n",
-    "\n",
-    "    wrong_info.forEach(function(case_item){\n",
-    "      if (!case_item || !case_item.cell_id) return;\n",
-    "      var cid = String(case_item.cell_id).trim();\n",
-    "      var el = document.getElementById(cid);\n",
-    "      if (!el) return;\n",
-    "      el.classList.add('wrong-number-cell');\n",
-    "      var reg_color = cell_to_color[cid] || '#f0f0f0';\n",
-    "      var gradient = 'linear-gradient(45deg, #cccccc, ' + reg_color + ')';\n",
-    "      el.style.setProperty('background-image', gradient, 'important');\n",
-    "    });\n",
-    "  }\n",
-    "\n",
-    "  function apply_issue_cell_outlines() {\n",
-    "    if (!issue_cellids || !Array.isArray(issue_cellids) || issue_cellids.length === 0) return;\n",
-    "    issue_cellids.forEach(function(cid_raw){\n",
-    "      var cid = String(cid_raw || '').trim();\n",
-    "      if (!cid) return;\n",
-    "      var el = document.getElementById(cid);\n",
-    "      if (!el) return;\n",
-    "      el.classList.add('issue-cell');\n",
-    "    });\n",
-    "  }\n",
-    "\n",
-    "  apply_static_coloring();\n",
-    "  apply_wrong_number_info();\n",
-    "  apply_issue_cell_outlines();\n",
-    "})();\n"
-  )
+```r
+# START_BLOCK rr_plain_issue_helpers
+rr_sanitize_issue_name = function(x) {
+  x = as.character(x)
+  x = stringi::stri_trim_both(x)
+  x = stringi::stri_trans_tolower(x)
+  x = stringi::stri_replace_all_regex(x, "[^a-z0-9]+", "_")
+  x = stringi::stri_replace_all_regex(x, "_{2,}", "_")
+  x = stringi::stri_replace_all_regex(x, "^_+|_+$", "")
+  if (nchar(x) == 0) x = "issue"
+  x
 }
 
-rr_build_issues_block = function(mapping, show_wrong_number = TRUE, eval_for_tab = NULL) {
-  restore.point("rr_build_issues_block")
+rr_collect_issue_cellids = function(mapping, show_wrong_number = TRUE, eval_for_tab = NULL) {
+  cids = character(0)
 
-  issue_cellids = character(0)
-
-  parts = list()
-  parts[[length(parts) + 1]] = '<div class="rr-issues">'
-  parts[[length(parts) + 1]] = '<h5>Issues</h5>'
-
-  # Wrong number cases
-  if (isTRUE(show_wrong_number) && !is.null(mapping$wrong_number_info) && is.data.frame(mapping$wrong_number_info) && nrow(mapping$wrong_number_info) > 0) {
-    wdf = mapping$wrong_number_info
-    if ("cell_id" %in% names(wdf)) issue_cellids = c(issue_cellids, as.character(wdf$cell_id))
-
-    parts[[length(parts) + 1]] = paste0('<h6>Discrepancies (wrong-number cases) <span class="rr-badge">', nrow(wdf), "</span></h6>")
-    parts[[length(parts) + 1]] = "<table><thead><tr>",
-    parts[[length(parts) + 1]] = "<th>cell_id</th><th>wrong_number_in_cell</th><th>number_in_stata_output</th><th>runid</th><th>script_num</th><th>code_line</th>",
-    parts[[length(parts) + 1]] = "</tr></thead><tbody>"
-    for (i in seq_len(nrow(wdf))) {
-      parts[[length(parts) + 1]] = paste0(
-        "<tr>",
-        "<td><code>", htmltools::htmlEscape(as.character(wdf$cell_id[i])), "</code></td>",
-        "<td>", htmltools::htmlEscape(as.character(wdf$wrong_number_in_cell[i])), "</td>",
-        "<td>", htmltools::htmlEscape(as.character(wdf$number_in_stata_output[i])), "</td>",
-        "<td>", htmltools::htmlEscape(as.character(wdf$runid[i])), "</td>",
-        "<td>", htmltools::htmlEscape(as.character(wdf$script_num[i])), "</td>",
-        "<td>", htmltools::htmlEscape(as.character(wdf$code_line[i])), "</td>",
-        "</tr>"
-      )
-    }
-    parts[[length(parts) + 1]] = "</tbody></table>"
-  } else {
-    parts[[length(parts) + 1]] = "<p class='rr-descr'>No wrong-number discrepancies reported (or disabled by option).</p>"
+  if (isTRUE(show_wrong_number) &&
+      !is.null(mapping$wrong_number_info) &&
+      is.data.frame(mapping$wrong_number_info) &&
+      nrow(mapping$wrong_number_info) > 0 &&
+      "cell_id" %in% names(mapping$wrong_number_info)) {
+    cids = c(cids, as.character(mapping$wrong_number_info$cell_id))
   }
 
-  # Evaluation issues (from rme.Rds processed via rr_process_eval_data)
+  if (!is.null(eval_for_tab) && length(eval_for_tab) > 0) {
+    test_names = names(eval_for_tab)
+    for (test_name in test_names) {
+      test_block = eval_for_tab[[test_name]]
+      if (is.null(test_block) || is.null(test_block$issues)) next
+      issues = test_block$issues
+      if (is.null(issues) || length(issues) == 0) next
+      cids = c(cids, rr_extract_cellids_from_issue_records(issues))
+    }
+  }
+
+  unique(stats::na.omit(stringi::stri_trim_both(as.character(cids))))
+}
+
+rr_build_issue_cell_class_map = function(mapping, show_wrong_number = TRUE, eval_for_tab = NULL) {
+  # Returns a named list: names are cellids, values are character vectors of issue names (sanitized).
+  out = list()
+
+  add_one = function(cellid, issue_name) {
+    cellid = stringi::stri_trim_both(as.character(cellid))
+    issue_name = rr_sanitize_issue_name(issue_name)
+    if (is.na(cellid) || nchar(cellid) == 0) return(invisible(NULL))
+    if (is.null(out[[cellid]])) {
+      out[[cellid]] = issue_name
+    } else {
+      out[[cellid]] = unique(c(out[[cellid]], issue_name))
+    }
+    invisible(NULL)
+  }
+
+  if (isTRUE(show_wrong_number) &&
+      !is.null(mapping$wrong_number_info) &&
+      is.data.frame(mapping$wrong_number_info) &&
+      nrow(mapping$wrong_number_info) > 0 &&
+      "cell_id" %in% names(mapping$wrong_number_info)) {
+    wdf = mapping$wrong_number_info
+    for (i in seq_len(nrow(wdf))) {
+      add_one(wdf$cell_id[i], "wrong_number")
+    }
+  }
+
+  if (!is.null(eval_for_tab) && length(eval_for_tab) > 0) {
+    test_names = names(eval_for_tab)
+    for (test_name in test_names) {
+      test_block = eval_for_tab[[test_name]]
+      if (is.null(test_block) || is.null(test_block$issues)) next
+      issues = test_block$issues
+      if (is.null(issues) || length(issues) == 0) next
+
+      cids = rr_extract_cellids_from_issue_records(issues)
+      if (length(cids) == 0) next
+
+      for (cid in cids) {
+        add_one(cid, test_name)
+      }
+    }
+  }
+
+  out
+}
+
+rr_add_issue_classes_to_tabhtml = function(tabhtml, class_map) {
+  # Adds classes to <td>/<th> tags by matching id="...".
+  # For each issue name, adds "has_issue_{issue_name}" as a class.
+  if (is.null(class_map) || length(class_map) == 0) return(tabhtml)
+
+  html = as.character(tabhtml)
+
+  add_for_one_id = function(html_in, cellid, issue_names) {
+    if (is.null(issue_names) || length(issue_names) == 0) return(html_in)
+
+    issue_names = unique(rr_sanitize_issue_name(issue_names))
+    cls_add = paste0("has_issue_", issue_names, collapse = " ")
+    cellid_esc = stringi::stri_escape_regex(as.character(cellid))
+
+    # Case A: id appears before class=
+    pat1 = paste0('(<(td|th)\\b[^>]*\\bid="', cellid_esc, '"[^>]*\\bclass=")([^"]*)(")')
+    if (grepl(pat1, html_in, perl = TRUE)) {
+      return(sub(pat1, paste0("\\1\\3 ", cls_add, "\\4"), html_in, perl = TRUE))
+    }
+
+    # Case B: class= appears before id
+    pat2 = paste0('(<(td|th)\\b[^>]*\\bclass=")([^"]*)("([^>]*\\bid="', cellid_esc, '"[^>]*)>)')
+    if (grepl(pat2, html_in, perl = TRUE)) {
+      return(sub(pat2, paste0("\\1\\2 ", cls_add, "\\3\\4"), html_in, perl = TRUE))
+    }
+
+    # Case C: no class attribute in the tag, insert class before closing >
+    pat3 = paste0('(<(td|th)\\b[^>]*\\bid="', cellid_esc, '"[^>]*)>')
+    if (grepl(pat3, html_in, perl = TRUE)) {
+      return(sub(pat3, paste0('\\1 class="', cls_add, '">'), html_in, perl = TRUE))
+    }
+
+    html_in
+  }
+
+  ids = names(class_map)
+  for (cellid in ids) {
+    html = add_for_one_id(html, cellid, class_map[[cellid]])
+  }
+
+  html
+}
+
+rr_make_single_table_plain_issues_html = function(tabtitle, tabhtml, mapping, show_wrong_number = TRUE, eval_for_tab = NULL) {
+  restore.point("rr_make_single_table_plain_issues_html")
+
+  class_map = rr_build_issue_cell_class_map(
+    mapping = mapping,
+    show_wrong_number = isTRUE(show_wrong_number),
+    eval_for_tab = eval_for_tab
+  )
+
+  tabhtml2 = rr_add_issue_classes_to_tabhtml(tabhtml, class_map)
+
+  issue_lines = character(0)
+
+  if (isTRUE(show_wrong_number) &&
+      !is.null(mapping$wrong_number_info) &&
+      is.data.frame(mapping$wrong_number_info) &&
+      nrow(mapping$wrong_number_info) > 0 &&
+      "cell_id" %in% names(mapping$wrong_number_info)) {
+    w_cids = unique(stats::na.omit(stringi::stri_trim_both(as.character(mapping$wrong_number_info$cell_id))))
+    if (length(w_cids) > 0) {
+      issue_lines = c(issue_lines, paste0("has_issue_wrong_number: ", paste(w_cids, collapse = ",")))
+    }
+  }
+
   if (!is.null(eval_for_tab) && length(eval_for_tab) > 0) {
     test_names = sort(names(eval_for_tab))
     for (test_name in test_names) {
       test_block = eval_for_tab[[test_name]]
       if (is.null(test_block) || is.null(test_block$issues)) next
-
       issues = test_block$issues
       if (is.null(issues) || length(issues) == 0) next
 
-      # Extract cellids for highlighting
-      issue_cellids = c(issue_cellids, rr_extract_cellids_from_issue_records(issues))
+      cids = unique(stats::na.omit(stringi::stri_trim_both(rr_extract_cellids_from_issue_records(issues))))
+      if (length(cids) == 0) next
 
-      parts[[length(parts) + 1]] = paste0(
-        "<h6>Test: <code>", htmltools::htmlEscape(test_name), "</code>",
-        " <span class='rr-badge'>", length(issues), "</span></h6>"
-      )
-      if (!is.null(test_block$description) && nchar(as.character(test_block$description)) > 0) {
-        parts[[length(parts) + 1]] = paste0("<p class='rr-descr'>", htmltools::htmlEscape(as.character(test_block$description)), "</p>")
-      }
-
-      parts[[length(parts) + 1]] = rr_issue_records_to_html_table(issues)
+      key = rr_sanitize_issue_name(test_name)
+      issue_lines = c(issue_lines, paste0("has_issue_", key, ": ", paste(cids, collapse = ",")))
     }
+  }
+
+  issues_block = if (length(issue_lines) == 0) {
+    ""
   } else {
-    parts[[length(parts) + 1]] = "<p class='rr-descr'>No evaluation issues for this table/version (or no rme.Rds found).</p>"
+    paste0("<pre>", htmltools::htmlEscape(paste(issue_lines, collapse = "\n")), "</pre>")
   }
 
-  parts[[length(parts) + 1]] = "</div>"
-
-  issue_cellids = unique(stats::na.omit(issue_cellids))
-  issue_cellids_json = jsonlite::toJSON(as.list(issue_cellids), auto_unbox = TRUE, null = "null", na = "null")
-
-  list(
-    issues_html = paste0(unlist(parts), collapse = "\n"),
-    issues_cellids_json = issue_cellids_json
+  htmltools::tagList(
+    htmltools::tags$html(
+      htmltools::tags$head(
+        htmltools::tags$meta(charset = "UTF-8"),
+        htmltools::tags$title(paste0("Table ", htmltools::htmlEscape(as.character(tabtitle))))
+      ),
+      htmltools::tags$body(
+        htmltools::tags$h4(htmltools::htmlEscape(as.character(tabtitle))),
+        htmltools::HTML(tabhtml2),
+        htmltools::tags$div(id = "issues", htmltools::HTML(issues_block))
+      )
+    )
   )
 }
-
-rr_extract_cellids_from_issue_records = function(issues) {
-  cids = character(0)
-  for (i in seq_along(issues)) {
-    rec = issues[[i]]
-    if (is.null(rec) || !is.list(rec)) next
-
-    if (!is.null(rec$cellids)) {
-      vals = unlist(stringi::stri_split_fixed(as.character(rec$cellids), ",", omit_empty = TRUE))
-      vals = stringi::stri_trim_both(vals)
-      cids = c(cids, vals)
-    } else if (!is.null(rec$cellid)) {
-      vals = stringi::stri_trim_both(as.character(rec$cellid))
-      cids = c(cids, vals)
-    }
-  }
-  cids
-}
-
-rr_issue_records_to_html_table = function(issues) {
-  if (is.null(issues) || length(issues) == 0) return("")
-
-  df = tryCatch({
-    as.data.frame(purrr::map_dfc(issues, function(x) x), stringsAsFactors = FALSE)
-  }, error = function(e) NULL)
-
-  # If conversion fails (ragged records), fall back to row-wise union of keys
-  if (is.null(df)) {
-    all_keys = unique(unlist(lapply(issues, names)))
-    df = do.call(rbind, lapply(issues, function(rec) {
-      row = setNames(as.list(rep("", length(all_keys))), all_keys)
-      for (k in names(rec)) row[[k]] = as.character(rec[[k]])
-      as.data.frame(row, stringsAsFactors = FALSE)
-    }))
-  }
-
-  # Ensure character columns
-  for (j in seq_along(df)) df[[j]] = as.character(df[[j]])
-
-  headers = names(df)
-  th = paste0("<th>", htmltools::htmlEscape(headers), "</th>", collapse = "")
-  rows = lapply(seq_len(nrow(df)), function(i) {
-    tds = paste0("<td>", htmltools::htmlEscape(df[i, , drop = TRUE]), "</td>", collapse = "")
-    paste0("<tr>", tds, "</tr>")
-  })
-
-  paste0(
-    "<table><thead><tr>", th, "</tr></thead><tbody>",
-    paste0(unlist(rows), collapse = "\n"),
-    "</tbody></table>"
-  )
-}
+# END_BLOCK rr_plain_issue_helpers
 ```
-
-!END_MODIFICATION add rr_single_table.R

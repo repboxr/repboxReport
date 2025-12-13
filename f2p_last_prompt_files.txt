@@ -1,5 +1,6 @@
 DESCRIPTION
 R/report_map.R
+R/rr_table.R
 R/rr_utils.R
 README.md
 inst/www/repbox.css
