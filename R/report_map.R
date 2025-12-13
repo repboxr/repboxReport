@@ -4,11 +4,17 @@ example = function() {
   library(repboxReport)
   # The project_dir needs to be set to a valid repbox project
   project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
+  project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
+
+  options(warn=2)
   # Generate report with default options (embedded data)
   opts = rr_map_report_opts(embed_data = FALSE)
   rep_file = rr_map_report(project_dir,opts = opts)
   browseURL(rep_file)
   rstudioapi::filesPaneNavigate(rep_file)
+
+  rstudioapi::filesPaneNavigate(project_dir)
+
 
   # Example with external JSON files
   # This report will need to be viewed via a web server.
@@ -136,37 +142,37 @@ rr_map_report <- function(project_dir,
     if (length(all_maps_flat) > 1 && nrow(all_maps_flat_df) > 0) {
       conflict_df <- all_maps_flat_df %>%
         rr_robust_script_num_join(parcels$stata_source$script_source) %>%
-        dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
-        dplyr::select(map_version_id, script_num, code_line, cell_ids) %>%
-        dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
+        filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
+        select(map_version_id, script_num, code_line, cell_ids) %>%
+        mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
         tidyr::unnest(cell_id) %>%
-        dplyr::mutate(cell_id = trimws(cell_id)) %>%
-        dplyr::filter(cell_id != "") %>%
-        dplyr::select(map_version_id, cell_id, script_num, code_line) %>%
-        dplyr::distinct()
+        mutate(cell_id = trimws(cell_id)) %>%
+        filter(cell_id != "") %>%
+        select(map_version_id, cell_id, script_num, code_line) %>%
+        distinct()
 
       if (nrow(conflict_df) > 0) {
           conflict_summary <- conflict_df %>%
-            dplyr::group_by(cell_id) %>%
-            dplyr::mutate(target_key = paste(script_num, code_line, sep = ":")) %>%
-            dplyr::summarise(
-              num_unique_targets = dplyr::n_distinct(target_key),
-              conflict_info = if (dplyr::n_distinct(target_key) > 1) {
-                list(dplyr::tibble(map_version_id = map_version_id, script_num = script_num, code_line = code_line))
+            group_by(cell_id) %>%
+            mutate(target_key = paste(script_num, code_line, sep = ":")) %>%
+            summarise(
+              num_unique_targets = n_distinct(target_key),
+              conflict_info = if (n_distinct(target_key) > 1) {
+                list(tibble(map_version_id = map_version_id, script_num = script_num, code_line = code_line))
               } else {
                 list(NULL)
               },
               .groups = "drop"
             ) %>%
-            dplyr::filter(num_unique_targets > 1)
+            filter(num_unique_targets > 1)
 
           if (nrow(conflict_summary) > 0) {
             mapping_conflict_msgs <- setNames(
               lapply(conflict_summary$conflict_info, function(info_df) {
                 details <- info_df %>%
-                  dplyr::distinct(map_version_id, script_num, code_line) %>%
-                  dplyr::mutate(msg = paste0(map_version_id, " -> S", script_num, " L", code_line)) %>%
-                  dplyr::pull(msg)
+                  distinct(map_version_id, script_num, code_line) %>%
+                  mutate(msg = paste0(map_version_id, " -> S", script_num, " L", code_line)) %>%
+                  pull(msg)
                 paste0("Note: Mapped differently in other versions:\n - ", paste(details, collapse="\n - "))
               }),
               conflict_summary$cell_id
@@ -179,17 +185,17 @@ rr_map_report <- function(project_dir,
     wrong_num_msgs <- list()
     if (isTRUE(opts$show_wrong_number_report) && "wrong_number_cases" %in% names(all_maps_flat_df) && nrow(all_maps_flat_df) > 0) {
         wnc_df <- all_maps_flat_df %>%
-            dplyr::select(map_version_id, wrong_number_cases) %>%
-            dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
+            select(map_version_id, wrong_number_cases) %>%
+            filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
 
         if (nrow(wnc_df) > 0) {
             wrong_num_conflict_df <- wnc_df %>%
                 tidyr::unnest(cols = wrong_number_cases) %>%
-                dplyr::select(map_version_id, cell_id) %>%
-                dplyr::distinct() %>%
-                dplyr::filter(!is.na(cell_id)) %>%
-                dplyr::group_by(cell_id) %>%
-                dplyr::summarise(versions = paste(sort(unique(map_version_id)), collapse=", "), .groups="drop")
+                select(map_version_id, cell_id) %>%
+                distinct() %>%
+                filter(!is.na(cell_id)) %>%
+                group_by(cell_id) %>%
+                summarise(versions = paste(sort(unique(map_version_id)), collapse=", "), .groups="drop")
 
             if (nrow(wrong_num_conflict_df) > 0) {
                 wrong_num_msgs <- setNames(
@@ -226,10 +232,10 @@ rr_map_report <- function(project_dir,
 
   # Generate color map for consistent colors across all loaded maps
   all_map_dfs <- unlist(all_map_types, recursive = FALSE)
-  all_reg_inds <- unique(unlist(lapply(all_map_dfs, function(df) if("reg_ind" %in% names(df)) unique(df$reg_ind) else NULL)))
-  all_reg_inds <- stats::na.omit(all_reg_inds)
-  reg_color_map <- rr_make_distinct_colors(length(all_reg_inds))
-  names(reg_color_map) <- all_reg_inds
+  all_regids <- unique(unlist(lapply(all_map_dfs, function(df) if("regid" %in% names(df)) unique(df$regid) else NULL)))
+  all_regids <- stats::na.omit(all_regids)
+  reg_color_map <- rr_make_distinct_colors(length(all_regids))
+  names(reg_color_map) <- all_regids
 
 
 
@@ -389,27 +395,32 @@ rr_map_report <- function(project_dir,
 #' @param opts A list of options, typically from `rr_map_report_opts()`.
 #' @return A nested list structured for JSON output
 #' @noRd
-rr_process_eval_data <- function(rme, all_map_types, stata_source, opts = list()) {
+rr_process_eval_data <- function(rme, all_map_types, stata_source, opts = list(), ignore_evals = c("non_reg_cmd")) {
     restore.point("rr_process_eval_data")
+
+    rme$evals = rme$evals[!names(rme$evals) %in% ignore_evals]
+
     if (is.null(rme) || is.null(rme$evals)) return(NULL)
+
+
 
     # 1. Create robust lookup from runid to code location from rme$run_df (ground truth)
     runid_to_code_lookup <- NULL
     if ("run_df" %in% names(rme) && !is.null(rme$run_df)) {
         runid_to_code_lookup <- rme$run_df %>%
-            dplyr::select(runid, script_num, code_line) %>%
-            dplyr::filter(!is.na(runid)) %>%
-            dplyr::distinct(runid, .keep_all = TRUE)
+            select(runid, script_num, code_line) %>%
+            filter(!is.na(runid)) %>%
+            distinct(runid, .keep_all = TRUE)
     }
 
     # 2. Create lookup from map info to get runid for tests that don't have it
     all_maps_flat_df <- purrr::map_dfr(unlist(all_map_types, recursive = FALSE), ~ if(!is.null(.x) && nrow(.x)>0) .x else NULL, .id = "map_version_id")
-    reg_ind_to_runid_lookup <- NULL
+    regid_to_runid_lookup <- NULL
     if (nrow(all_maps_flat_df) > 0) {
-        reg_ind_to_runid_lookup <- all_maps_flat_df %>%
-            dplyr::select(map_version_id, tabid, reg_ind, runid) %>%
-            dplyr::filter(!is.na(reg_ind), !is.na(runid)) %>%
-            dplyr::distinct()
+        regid_to_runid_lookup <- all_maps_flat_df %>%
+            select(map_version_id, tabid, regid, runid) %>%
+            filter(!is.na(regid), !is.na(runid)) %>%
+            distinct()
     }
 
     # 3. Filter and order tests to be processed
@@ -437,17 +448,17 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source, opts = list()
     processed_evals <- list()
     for (test_name in final_test_order) {
         df <- eval_tests[[test_name]]
-        df <- dplyr::ungroup(df)
+        df <- ungroup(df)
 
         if (!"map_version" %in% names(df)) next
 
         df$ver_id <- df$map_version
-        df <- dplyr::filter(df, !is.na(ver_id))
+        df <- filter(df, !is.na(ver_id))
         if(nrow(df) == 0) next
 
         # Standardize runid column if it's named 'runids'
         if ("runids" %in% names(df) && !"runid" %in% names(df)) {
-             df <- df %>% dplyr::rename(runid = runids)
+             df <- df %>% rename(runid = runids)
         }
 
         # Ensure runid is numeric for joining
@@ -455,17 +466,16 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source, opts = list()
             df$runid <- suppressWarnings(as.numeric(as.character(df$runid)))
         }
 
-        # If df has reg_ind but no runid, try to get runid from maps
-        if (!"runid" %in% names(df) && "reg_ind" %in% names(df) && !is.null(reg_ind_to_runid_lookup)) {
-            df$reg_ind <- as.integer(df$reg_ind)
-            df <- dplyr::left_join(df, reg_ind_to_runid_lookup, by = c("map_version" = "map_version_id", "tabid", "reg_ind"))
+        # If df has regid but no runid, try to get runid from maps
+        if (!"runid" %in% names(df) && "regid" %in% names(df) && !is.null(regid_to_runid_lookup)) {
+            df <- left_join(df, regid_to_runid_lookup, by = c("map_version" = "map_version_id", "tabid", "regid"))
         }
 
         # If df now has runid, join with ground truth to get code location.
         # This join will not filter out rows if runid is NA, which is what we want.
         if ("runid" %in% names(df) && !is.null(runid_to_code_lookup)) {
             df <- df %>%
-                dplyr::left_join(runid_to_code_lookup, by = "runid")
+                left_join(runid_to_code_lookup, by = "runid")
         }
 
         # Standardize cellids: if only cellid exists, copy it to cellids for the JS
@@ -520,32 +530,32 @@ rr_robust_script_num_join <- function(map_df, stata_source) {
 
   # If script_num column exists but has NAs, remove it to be re-created cleanly.
   if ("script_num" %in% names(map_df)) {
-    map_df <- map_df %>% dplyr::select(-script_num)
+    map_df <- map_df %>% select(-script_num)
   }
 
   script_info <- stata_source %>%
-    dplyr::select(file_path, script_num) %>%
-    dplyr::distinct() %>%
-    dplyr::mutate(script_basename = basename(file_path))
+    select(file_path, script_num) %>%
+    distinct() %>%
+    mutate(script_basename = basename(file_path))
 
   # Attempt 1: Join by full path
   map_df_with_num_path <- map_df %>%
-    dplyr::left_join(script_info %>% dplyr::select(file_path, script_num), by = c("script_file" = "file_path"))
+    left_join(script_info %>% select(file_path, script_num), by = c("script_file" = "file_path"))
 
   # Attempt 2: Join by basename
   script_info_basename_lookup <- script_info %>%
-    dplyr::select(script_basename = script_basename, script_num_base = script_num)
+    select(script_basename = script_basename, script_num_base = script_num)
   if (any(duplicated(script_info_basename_lookup$script_basename))) {
     warning("Duplicate script basenames found. Matching by basename may be ambiguous. Taking first match.")
     script_info_basename_lookup <- script_info_basename_lookup %>%
-      dplyr::distinct(script_basename, .keep_all = TRUE)
+      distinct(script_basename, .keep_all = TRUE)
   }
 
   map_df_with_num_base <- map_df %>%
-    dplyr::left_join(script_info_basename_lookup, by = c("script_file" = "script_basename"))
+    left_join(script_info_basename_lookup, by = c("script_file" = "script_basename"))
 
   # Coalesce the results. script_num from path join takes precedence.
-  map_df$script_num <- dplyr::coalesce(map_df_with_num_path$script_num, map_df_with_num_base$script_num_base)
+  map_df$script_num <- coalesce(map_df_with_num_path$script_num, map_df_with_num_base$script_num_base)
 
   return(map_df)
 }
@@ -563,34 +573,34 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
     # Robustly join to get script_num
     map_df <- rr_robust_script_num_join(map_df, stata_source)
 
-    ensure_cols <- c("runid", "script_num", "code_line", "cell_ids", "tabid", "reg_ind")
+    ensure_cols <- c("runid", "script_num", "code_line", "cell_ids", "tabid", "regid")
     for (col in ensure_cols) {
       if (!col %in% names(map_df)) {
-        map_df[[col]] <- if (col %in% c("runid", "script_num", "code_line", "reg_ind")) NA_integer_ else NA_character_
+        map_df[[col]] <- if (col %in% c("runid", "script_num", "code_line", "regid")) NA_integer_ else NA_character_
       }
     }
 
     # --- NEW LOGIC FOR COMPACT CELL->CODE MAPPING (for highlighting) ---
     cell_map_df_highlight <- map_df %>%
-      dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
-      dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
+      filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
+      mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
       tidyr::unnest(cell_id) %>%
-      dplyr::mutate(cell_id = trimws(cell_id)) %>%
-      dplyr::select(cell_id, runid, script_num, code_line)
+      mutate(cell_id = trimws(cell_id)) %>%
+      select(cell_id, runid, script_num, code_line)
 
     if (nrow(cell_map_df_highlight) > 0) {
         # 1. Find unique code locations and assign a 0-based index
         unique_locations <- cell_map_df_highlight %>%
-          dplyr::select(runid, script_num, code_line) %>%
-          dplyr::distinct() %>%
-          dplyr::arrange(runid, script_num, code_line) %>%
-          dplyr::mutate(location_idx = dplyr::row_number() - 1)
+          select(runid, script_num, code_line) %>%
+          distinct() %>%
+          arrange(runid, script_num, code_line) %>%
+          mutate(location_idx = row_number() - 1)
 
         # 2. Create the list of location arrays for JSON
         code_locations_list <- purrr::pmap(unique_locations[, c("runid", "script_num", "code_line")], c)
 
         # 3. Join back to get the index for each cell and create the named list
-        cell_to_idx_df <- dplyr::left_join(cell_map_df_highlight, unique_locations, by = c("runid", "script_num", "code_line"))
+        cell_to_idx_df <- left_join(cell_map_df_highlight, unique_locations, by = c("runid", "script_num", "code_line"))
         cell_to_code_idx <- setNames(as.list(cell_to_idx_df$location_idx), cell_to_idx_df$cell_id)
     } else {
         code_locations_list <- list()
@@ -600,31 +610,31 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
 
     # --- NEW logic for cell_map for tooltips ---
     cell_map_df_tooltip <- map_df %>%
-      dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num)) %>%
-      dplyr::select(runid, script_num, code_line, reg_ind, cell_ids) %>%
-      dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
+      filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num)) %>%
+      select(runid, script_num, code_line, regid, cell_ids) %>%
+      mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
       tidyr::unnest(cell_id) %>%
-      dplyr::mutate(cell_id = trimws(cell_id)) %>%
-      dplyr::filter(cell_id != "") %>%
-      dplyr::group_by(cell_id) %>%
-      dplyr::summarise(
-        runid = dplyr::first(runid),
-        script_num = dplyr::first(script_num),
-        code_line = dplyr::first(code_line),
-        reg_ind = dplyr::first(reg_ind),
+      mutate(cell_id = trimws(cell_id)) %>%
+      filter(cell_id != "") %>%
+      group_by(cell_id) %>%
+      summarise(
+        runid = first(runid),
+        script_num = first(script_num),
+        code_line = first(code_line),
+        regid = first(regid),
         .groups = "drop"
       )
 
     if(nrow(cell_map_df_tooltip) > 0) {
         script_file_lookup <- stata_source %>%
-            dplyr::select(script_num, file_path) %>%
-            dplyr::mutate(script_file = basename(file_path)) %>%
-            dplyr::select(-file_path) %>%
-            dplyr::distinct()
+            select(script_num, file_path) %>%
+            mutate(script_file = basename(file_path)) %>%
+            select(-file_path) %>%
+            distinct()
 
         cell_map_df_tooltip <- cell_map_df_tooltip %>%
-            dplyr::left_join(script_file_lookup, by = "script_num") %>%
-            dplyr::select(-script_num)
+            left_join(script_file_lookup, by = "script_num") %>%
+            select(-script_num)
     }
 
 
@@ -637,23 +647,23 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
 
 
     code_map_df <- map_df %>%
-      dplyr::filter(!is.na(code_line), !is.na(script_num)) %>%
-      dplyr::select(script_num, code_line, tabid, cell_ids) %>%
-      dplyr::distinct()
+      filter(!is.na(code_line), !is.na(script_num)) %>%
+      select(script_num, code_line, tabid, cell_ids) %>%
+      distinct()
     code_to_cells <- if (nrow(code_map_df) > 0) setNames(lapply(1:nrow(code_map_df), function(i) as.list(code_map_df[i, c("tabid", "cell_ids")])), paste0("s", code_map_df$script_num, "_l", code_map_df$code_line)) else list()
     reg_info <- setNames(list(), character(0))
-    if ("reg_ind" %in% names(map_df) && length(reg_color_map) > 0) {
+    if ("regid" %in% names(map_df) && length(reg_color_map) > 0) {
       reg_df <- map_df %>%
-        dplyr::filter(!is.na(reg_ind), !is.na(cell_ids), cell_ids != "") %>%
-        dplyr::select(reg_ind, cell_ids) %>%
-        dplyr::group_by(reg_ind) %>%
-        dplyr::summarise(all_cell_ids = paste(unique(trimws(unlist(strsplit(cell_ids, ",")))), collapse = ","), .groups = "drop")
+        filter(!is.na(regid), !is.na(cell_ids), cell_ids != "") %>%
+        select(regid, cell_ids) %>%
+        group_by(regid) %>%
+        summarise(all_cell_ids = paste(unique(trimws(unlist(strsplit(cell_ids, ",")))), collapse = ","), .groups = "drop")
       if (nrow(reg_df) > 0) {
         reg_info_list <- lapply(1:nrow(reg_df), function(i) {
-            reg_index_char <- as.character(reg_df$reg_ind[i])
-            if (reg_index_char %in% names(reg_color_map)) list(color = reg_color_map[[reg_index_char]], cell_ids = reg_df$all_cell_ids[i]) else NULL
+            regidex_char <- as.character(reg_df$regid[i])
+            if (regidex_char %in% names(reg_color_map)) list(color = reg_color_map[[regidex_char]], cell_ids = reg_df$all_cell_ids[i]) else NULL
           })
-        names(reg_info_list) <- reg_df$reg_ind
+        names(reg_info_list) <- reg_df$regid
         reg_info <- reg_info_list[!sapply(reg_info_list, is.null)]
       }
     }
@@ -664,13 +674,13 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
         # The list column from JSON can contain NULLs for empty arrays. Filter these out.
         # We select the key identifiers to link the discrepancy back to its source.
         wnc_df <- map_df %>%
-            dplyr::select(tabid, runid, script_num, code_line, wrong_number_cases) %>%
-            dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
+            select(tabid, runid, script_num, code_line, wrong_number_cases) %>%
+            filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
 
         if (nrow(wnc_df) > 0) {
             wrong_number_info <- wnc_df %>%
                 tidyr::unnest(cols = wrong_number_cases) %>%
-                dplyr::select(
+                select(
                     tabid,
                     cell_id,
                     wrong_number_in_cell,
@@ -679,7 +689,7 @@ rr_process_single_map_for_js <- function(map_df, reg_color_map, stata_source) {
                     script_num,
                     code_line
                 ) %>%
-                dplyr::distinct()
+                distinct()
         }
     }
 
@@ -730,34 +740,34 @@ rr_make_do_panel_html <- function(stata_source, stata_cmd, stata_run_cmd, stata_
   restore.point("rr_make_do_panel_html")
   # --- Data Preparation ---
   run_df <- stata_run_cmd %>%
-    dplyr::left_join(stata_source %>% dplyr::select(artid, file_path, script_num), by=c("artid", "file_path")) %>%
-    dplyr::left_join(stata_run_log, by = c("artid", "runid", "script_num"))
+    left_join(stata_source %>% select(artid, file_path, script_num), by=c("artid", "file_path")) %>%
+    left_join(stata_run_log, by = c("artid", "runid", "script_num"))
 
   ldf <- stata_source %>%
-    dplyr::mutate(text_lines = stringi::stri_split_lines(text)) %>%
-    dplyr::select(script_num, file_path, text_lines) %>%
+    mutate(text_lines = stringi::stri_split_lines(text)) %>%
+    select(script_num, file_path, text_lines) %>%
     tidyr::unnest(text_lines) %>%
-    dplyr::group_by(script_num) %>%
-    dplyr::mutate(orgline = dplyr::row_number()) %>%
-    dplyr::ungroup()
+    group_by(script_num) %>%
+    mutate(orgline = row_number()) %>%
+    ungroup()
 
   cmd_info <- stata_cmd %>%
-    dplyr::select(file_path, line, orgline_start, orgline_end, is_reg) %>%
-    dplyr::mutate(orgline = purrr::map2(orgline_start, orgline_end, seq)) %>%
+    select(file_path, line, orgline_start, orgline_end, is_reg) %>%
+    mutate(orgline = purrr::map2(orgline_start, orgline_end, seq)) %>%
     tidyr::unnest(orgline)
 
-  ldf <- dplyr::left_join(ldf, cmd_info, by = c("file_path", "orgline"))
+  ldf <- left_join(ldf, cmd_info, by = c("file_path", "orgline"))
 
   run_info <- run_df %>%
-    dplyr::group_by(file_path, line) %>%
-    dplyr::summarise(runs = list(dplyr::tibble(runid = runid, logtxt = logtxt, errcode = errcode, missing_data = missing_data)), .groups = "drop")
+    group_by(file_path, line) %>%
+    summarise(runs = list(tibble(runid = runid, logtxt = logtxt, errcode = errcode, missing_data = missing_data)), .groups = "drop")
 
   first_lines <- stata_cmd %>%
-    dplyr::select(file_path, line, orgline = orgline_start) %>%
-    dplyr::distinct() %>%
-    dplyr::left_join(run_info, by = c("file_path", "line"))
+    select(file_path, line, orgline = orgline_start) %>%
+    distinct() %>%
+    left_join(run_info, by = c("file_path", "line"))
 
-  ldf <- dplyr::left_join(ldf, first_lines, by = c("file_path", "line", "orgline"))
+  ldf <- left_join(ldf, first_lines, by = c("file_path", "line", "orgline"))
 
   # --- Filter log output based on opts ---
   if (!is.null(opts$output_for)) {
@@ -780,15 +790,15 @@ rr_make_do_panel_html <- function(stata_source, stata_cmd, stata_run_cmd, stata_
         })
 
         # The map's 'code_line' corresponds to the original line number ('orgline')
-        mapped_orglines_df <- dplyr::bind_rows(all_map_dfs_norm) %>%
-          dplyr::filter(!is.na(script_num), !is.na(code_line)) %>%
-          dplyr::select(script_num, orgline = code_line) %>%
-          dplyr::distinct()
+        mapped_orglines_df <- bind_rows(all_map_dfs_norm) %>%
+          filter(!is.na(script_num), !is.na(code_line)) %>%
+          select(script_num, orgline = code_line) %>%
+          distinct()
 
         # Create an indicator column for mapped lines. This join works because `ldf` has one row per `orgline`.
         ldf <- ldf %>%
-          dplyr::left_join(
-            mapped_orglines_df %>% dplyr::mutate(is_mapped = TRUE),
+          left_join(
+            mapped_orglines_df %>% mutate(is_mapped = TRUE),
             by = c("script_num", "orgline")
           )
       } else {
@@ -804,7 +814,7 @@ rr_make_do_panel_html <- function(stata_source, stata_cmd, stata_run_cmd, stata_
 
       # Clean up the temporary column
       if ("is_mapped" %in% names(ldf)) {
-        ldf <- ldf %>% dplyr::select(-is_mapped)
+        ldf <- ldf %>% select(-is_mapped)
       }
     }
   }

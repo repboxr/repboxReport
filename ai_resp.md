@@ -1,383 +1,539 @@
-Of course. Let's analyze your request. You want to remove the standardization of `reg_ind` to better inspect the original mapping data, even if it means losing consistent coloring across different map versions.
+!MODIFICATION add webshot2 to DESCRIPTION
+scope = "lines"
+file = "DESCRIPTION"
+insert_after_lines = "         dplyr, tidyr, purrr, jsonlite, randtoolbox, FuzzyProduction, repboxAI"
+description = '''Add webshot2 as an optional dependency for rendering per-table PNG screenshots.'''
+---------------------------------------------------------------------------------------------------
 
-### Would it work?
+```
+Suggests: webshot2
+```
 
-Yes, removing the call to `rr_standardize_reg_ind` will work. The report will be generated successfully.
+!END_MODIFICATION add webshot2 to DESCRIPTION
 
-The main consequence, as you anticipated, is that the color-coding for regressions will no longer be consistent across different map versions for the same conceptual regression.
-*   If `map_A` defines a regression as `reg_ind = 1` and `map_B` defines the *same* regression as `reg_ind = 5`, they will now have different colors in the report.
-*   Conversely, if `map_A` defines regression X as `reg_ind = 1` and `map_B` defines a completely different regression Y as `reg_ind = 1`, they will now share the same color.
+!MODIFICATION add rr_single_table.R
+scope = "file"
+file = "R/rr_single_table.R"
+is_new_file = true
+description = '''Add rr_single_table to generate per-table HTML (minimal for PNG rendering + full with issues), using the same reg color coding and optional wrong-number + evaluation issues rendering.'''
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-The logic that creates the color map (`rr_make_distinct_colors`) will simply collect all `reg_ind` values present in the loaded maps and assign a unique color to each unique number. The interactivity (clicking on cells or code to highlight links) will not be affected.
-
-Since this behavior is acceptable for your goal of inspecting the original data, I will proceed with the changes.
-
-### Other Normalizations in the Report Generation
-
-You also asked about other data normalizations. Here are the key ones that occur during the report generation. I will just describe them as requested.
-
-1.  **`script_num` Creation**: Many map files only contain a `script_file` (the filename), but the report internally uses `script_num` to reference the correct script tab. The function `rr_robust_script_num_join` systematically adds or completes the `script_num` column in all map dataframes by looking up the filename in the `stata_source` parcel. This is a crucial data enrichment step that ensures all mappings can be correctly linked to the code shown in the report.
-
-2.  **Evaluation Data Enrichment**: The function `rr_process_eval_data` processes the `rme.Rds` file. The raw evaluation tests might only reference a `map_version` or `reg_ind`. This function enriches the test data by adding precise code locations (`script_num`, `code_line`) and `runid`s. It does this by cross-referencing information from the loaded maps and a "ground truth" `run_df` from the `rme` object itself. This makes the evaluation results in the report interactive. It also standardizes some column names (e.g., `runids` to `runid`) for consistency.
-
-3.  **Ensuring Essential Columns**: The `rr_process_single_map_for_js` function ensures that all map dataframes have a standard set of columns (e.g., `runid`, `reg_ind`, `tabid`). If a column is missing from an input map file, it is added with `NA` values. This makes the downstream code more robust by preventing errors from missing columns.
-
-4.  **Standardizing Map Version Names**: In `rr_load_all_map_versions`, the names assigned to each loaded map are explicitly set to be the full `ver_id` (e.g., `model--v0`). This corrects a legacy behavior that sometimes shortened these names, ensuring that map versions can be reliably linked to evaluation data, which is also keyed by the full `ver_id`.
-
-These steps are generally important for the integrity and functionality of the final report.
-
-### Implementing the Change
-
-Below are the modifications to remove the `reg_ind` standardization. I will modify the `rr_map_report` function and effectively remove the now-unused `rr_standardize_reg_ind` function by clearing its file.
-
-!MODIFICATION rr_map_report in report_map.R
-scope = "function"
-file = "R/report_map.R"
-function_name = "rr_map_report"
-description = '''Remove the call to `rr_standardize_reg_ind` to disable the standardization of regression indices. This allows viewing the original `reg_ind` values from the map data, at the cost of losing consistent coloring for the same regression across different map versions.'''
----
 ```r
-#' Creates an interactive HTML report to visualize maps
+#' Create per-table HTML (and optional PNG) snapshots from the map report inputs
 #'
-#' This function generates a self-contained HTML report that visualizes the
-#' maps between Stata do-files and regression tables. The report features
-#' static color-coding for regression cells and interactive highlighting.
+#' Generates, for each requested table id, two HTML files:
+#' 1) a minimal HTML that only contains the colored table (suitable for webshot PNG),
+#' 2) a larger HTML that additionally lists issues (wrong-number cases + evaluation issues),
+#'    respecting opts$only_tests and opts$ignore_tests.
+#'
+#' Optionally creates a PNG screenshot of the colored table using webshot2.
 #'
 #' @param project_dir The root directory of the project.
-#' @param output_dir Directory for the report. Defaults to 'reports' in project_dir.
-#' @param output_file The name of the HTML report file.
-#' @param doc_type The document type (e.g., "art", "app1").
-#' @param opts A list of options, typically generated by `rr_map_report_opts()`.
-#' @return The path to the generated HTML report file.
+#' @param tabid One or more table ids (character or numeric).
+#' @param output_dir Directory for outputs. Defaults to 'reports_tables' in project_dir.
+#' @param doc_type Document type (e.g., "art", "app1").
+#' @param opts Options list, typically from rr_map_report_opts(). only_tests/ignore_tests are respected.
+#' @param map_prod_id Which map product id to use for coloring. Defaults to the first in opts$map_prod_ids.
+#' @param map_version_id Which map version id to use. If NULL, a deterministic "latest" is chosen (lexicographically last).
+#' @param table_png Logical. If TRUE, write a PNG of the colored table using webshot2.
+#' @param png_zoom Zoom factor for PNG rendering.
+#' @param png_delay Delay (seconds) before screenshot.
+#' @param png_vwidth Viewport width for rendering.
+#' @param png_vheight Viewport height for rendering.
+#' @return Invisibly returns a data.frame with produced file paths.
 #' @export
-rr_map_report <- function(project_dir,
-                          output_dir = file.path(project_dir, "reports"),
-                          output_file = "map_report.html",
-                          doc_type = "art",
-                          opts = NULL) {
-  restore.point("rr_map_report")
-  # --- 0. Check dependencies & Options ---
-  pkgs <- c("dplyr", "tidyr", "stringi", "htmltools", "jsonlite", "purrr", "randtoolbox")
+rr_single_table = function(project_dir,
+  tabid,
+  output_dir = file.path(project_dir, "reports_tables"),
+  doc_type = "art",
+  opts = NULL,
+  map_prod_id = NULL,
+  map_version_id = NULL,
+  table_png = TRUE,
+  png_zoom = 2,
+  png_delay = 0.2,
+  png_vwidth = 1400,
+  png_vheight = 900
+) {
+  restore.point("rr_single_table")
+
+  pkgs = c("dplyr", "tidyr", "stringi", "htmltools", "jsonlite", "purrr", "randtoolbox")
   for (pkg in pkgs) {
     if (!requireNamespace(pkg, quietly = TRUE)) {
-      stop(paste("Please install the '", pkg, "' package."), call. = FALSE)
+      stop(paste0("Please install the '", pkg, "' package."), call. = FALSE)
+    }
+  }
+
+  if (isTRUE(table_png)) {
+    if (!requireNamespace("webshot2", quietly = TRUE)) {
+      stop("table_png=TRUE requires package 'webshot2' (Suggests). Please install it.", call. = FALSE)
     }
   }
 
   if (is.null(opts)) {
-    opts <- rr_map_report_opts()
+    opts = rr_map_report_opts()
   }
 
-  # Decide on show_wrong_number_report if it's NA
-  rme_file_for_check <- file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
+  tabids = as.character(tabid)
+  if (length(tabids) == 0) stop("tabid must contain at least one table id.", call. = FALSE)
+
+  if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+  # Decide on show_wrong_number_report if it's NA (same logic as rr_map_report)
+  rme_file_for_check = file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
+  if (is.null(opts$show_wrong_number_report)) opts$show_wrong_number_report = NA
   if (is.na(opts$show_wrong_number_report)) {
-      opts$show_wrong_number_report <- !file.exists(rme_file_for_check)
+    opts$show_wrong_number_report = !file.exists(rme_file_for_check)
   }
 
-  if (!dir.exists(output_dir)) {
-    dir.create(output_dir, recursive = TRUE)
+  # Load parcels and table html
+  parcels = repboxDB::repdb_load_parcels(project_dir, c("stata_source", "stata_run_cmd", "stata_run_log", "stata_cmd"))
+
+  fp_dir = file.path(project_dir, "fp", paste0("prod_", doc_type))
+  tab_main_info = rai_pick_tab_ver(fp_dir, "tab_main")
+  if (nrow(tab_main_info) == 0) {
+    stop(paste0("Could not find a suitable 'tab_main' product for doc_type '", doc_type, "'"), call. = FALSE)
+  }
+  tab_main = fp_load_prod_df(tab_main_info$ver_dir)
+
+  tab_main$tabid = as.character(tab_main$tabid)
+  tab_rows = dplyr::filter(tab_main, tabid %in% tabids)
+  missing_tabs = setdiff(tabids, tab_rows$tabid)
+  if (length(missing_tabs) > 0) {
+    stop(paste0("Could not find tabid(s) in tab_main: ", paste(missing_tabs, collapse = ", ")), call. = FALSE)
   }
 
-  # --- 1. Setup asset paths ---
-  assets_dir <- file.path(output_dir, "shared")
-  if (!dir.exists(assets_dir)) {
-    dir.create(assets_dir, recursive = TRUE)
-  }
-
-  # --- 2. Load data ---
-  cat("\nLoading data...")
-  parcels <- repboxDB::repdb_load_parcels(project_dir, c("stata_source", "stata_run_cmd", "stata_run_log", "stata_cmd"))
-
-  fp_dir <- file.path(project_dir, "fp", paste0("prod_", doc_type))
-  tab_main_info <- rai_pick_tab_ver(fp_dir, "tab_main")
-  if(nrow(tab_main_info) == 0) {
-      stop("Could not find a suitable 'tab_main' product for doc_type '", doc_type, "'")
-  }
-  tab_main <- fp_load_prod_df(tab_main_info$ver_dir)
-
-  cat("\nLoading maps...")
-  all_map_types <- list()
-  prod_id = "map_reg_run"
+  # Load maps (all types in opts, but we will choose one for output)
+  all_map_types = list()
   for (prod_id in opts$map_prod_ids) {
-    map_list <- rr_load_all_map_versions(project_dir, doc_type, prod_id = prod_id)
+    map_list = rr_load_all_map_versions(project_dir, doc_type, prod_id = prod_id)
     if (length(map_list) > 0) {
-      all_map_types[[prod_id]] <- map_list
+      all_map_types[[prod_id]] = map_list
     }
   }
   if (length(all_map_types) == 0) {
-    warning("No map versions found for any prod_id in opts$map_prod_ids. The report will be generated without interactive links.")
+    stop("No map versions found for any prod_id in opts$map_prod_ids.", call. = FALSE)
   }
 
-  # --- 3. Generate HTML & JS components ---
-  cat("\nGenerating HTML components...")
+  if (is.null(map_prod_id)) {
+    map_prod_id = opts$map_prod_ids[1]
+  }
+  if (!(map_prod_id %in% names(all_map_types))) {
+    stop(paste0("map_prod_id '", map_prod_id, "' not found. Available: ", paste(names(all_map_types), collapse = ", ")), call. = FALSE)
+  }
 
-  # Pre-compute conflict information for tooltips.
-  # A conflict exists if a cell_id maps to different script/line combinations
-  # across different map versions, or if it has a wrong_number_case.
-  cell_conflict_data <- {
-    all_maps_flat <- unlist(all_map_types, recursive = FALSE)
-    all_maps_flat_df <- purrr::map_dfr(all_maps_flat, ~.x, .id = "map_version_id")
+  available_versions = names(all_map_types[[map_prod_id]])
+  if (length(available_versions) == 0) {
+    stop(paste0("No versions available for map_prod_id '", map_prod_id, "'."), call. = FALSE)
+  }
 
-    # 1. Mapping conflicts
-    mapping_conflict_msgs <- list()
-    if (length(all_maps_flat) > 1 && nrow(all_maps_flat_df) > 0) {
-      conflict_df <- all_maps_flat_df %>%
-        rr_robust_script_num_join(parcels$stata_source$script_source) %>%
-        dplyr::filter(!is.na(cell_ids), cell_ids != "", !is.na(script_num), !is.na(code_line)) %>%
-        dplyr::select(map_version_id, script_num, code_line, cell_ids) %>%
-        dplyr::mutate(cell_id = strsplit(as.character(cell_ids), ",")) %>%
-        tidyr::unnest(cell_id) %>%
-        dplyr::mutate(cell_id = trimws(cell_id)) %>%
-        dplyr::filter(cell_id != "") %>%
-        dplyr::select(map_version_id, cell_id, script_num, code_line) %>%
-        dplyr::distinct()
+  if (is.null(map_version_id)) {
+    map_version_id = sort(available_versions)[length(available_versions)]
+  }
+  if (!(map_version_id %in% available_versions)) {
+    stop(paste0(
+      "map_version_id '", map_version_id, "' not found for map_prod_id '", map_prod_id, "'. Available: ",
+      paste(available_versions, collapse = ", ")
+    ), call. = FALSE)
+  }
 
-      if (nrow(conflict_df) > 0) {
-          conflict_summary <- conflict_df %>%
-            dplyr::group_by(cell_id) %>%
-            dplyr::mutate(target_key = paste(script_num, code_line, sep = ":")) %>%
-            dplyr::summarise(
-              num_unique_targets = dplyr::n_distinct(target_key),
-              conflict_info = if (dplyr::n_distinct(target_key) > 1) {
-                list(dplyr::tibble(map_version_id = map_version_id, script_num = script_num, code_line = code_line))
-              } else {
-                list(NULL)
-              },
-              .groups = "drop"
-            ) %>%
-            dplyr::filter(num_unique_targets > 1)
+  # Build global reg color map for consistency (same idea as rr_map_report)
+  all_map_dfs = unlist(all_map_types, recursive = FALSE)
+  all_regids = unique(unlist(lapply(all_map_dfs, function(df) {
+    if (!is.null(df) && "regid" %in% names(df)) unique(df$regid) else NULL
+  })))
+  all_regids = stats::na.omit(all_regids)
+  reg_color_map = rr_make_distinct_colors(length(all_regids))
+  names(reg_color_map) = all_regids
 
-          if (nrow(conflict_summary) > 0) {
-            mapping_conflict_msgs <- setNames(
-              lapply(conflict_summary$conflict_info, function(info_df) {
-                details <- info_df %>%
-                  dplyr::distinct(map_version_id, script_num, code_line) %>%
-                  dplyr::mutate(msg = paste0(map_version_id, " -> S", script_num, " L", code_line)) %>%
-                  dplyr::pull(msg)
-                paste0("Note: Mapped differently in other versions:\n - ", paste(details, collapse="\n - "))
-              }),
-              conflict_summary$cell_id
-            )
-          }
+  # Evaluation data (optional)
+  processed_eval_data = NULL
+  rme_file = file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
+  if (file.exists(rme_file)) {
+    tryCatch({
+      rme = readRDS(rme_file)
+      processed_eval_data = rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source, opts)
+    }, error = function(e) {
+      warning(paste0("Could not load or process rme.Rds: ", e$message))
+      processed_eval_data = NULL
+    })
+  }
+
+  # Per-table outputs
+  out_rows = list()
+  for (i in seq_len(nrow(tab_rows))) {
+    row = tab_rows[i, ]
+    tabid_i = as.character(row$tabid)
+
+    map_df = all_map_types[[map_prod_id]][[map_version_id]]
+    if (is.null(map_df) || nrow(map_df) == 0) next
+
+    map_df$tabid = as.character(map_df$tabid)
+    map_df_tab = dplyr::filter(map_df, tabid == tabid_i)
+
+    mapping = rr_process_single_map_for_js(map_df_tab, reg_color_map, parcels$stata_source$script_source)
+
+    eval_for_tab = NULL
+    if (!is.null(processed_eval_data) && map_version_id %in% names(processed_eval_data)) {
+      ver_block = processed_eval_data[[map_version_id]]
+      if (!is.null(ver_block) && tabid_i %in% names(ver_block)) {
+        eval_for_tab = ver_block[[tabid_i]]
       }
     }
 
-    # 2. Wrong number conflicts
-    wrong_num_msgs <- list()
-    if (isTRUE(opts$show_wrong_number_report) && "wrong_number_cases" %in% names(all_maps_flat_df) && nrow(all_maps_flat_df) > 0) {
-        wnc_df <- all_maps_flat_df %>%
-            dplyr::select(map_version_id, wrong_number_cases) %>%
-            dplyr::filter(!sapply(wrong_number_cases, function(x) is.null(x) || NROW(x) == 0))
+    base_name = rr_safe_filename(paste0("tab", tabid_i, "__", map_prod_id, "__", map_version_id))
+    file_table_only = file.path(output_dir, paste0(base_name, "__table_only.html"))
+    file_with_issues = file.path(output_dir, paste0(base_name, "__with_issues.html"))
+    file_png = file.path(output_dir, paste0(base_name, ".png"))
 
-        if (nrow(wnc_df) > 0) {
-            wrong_num_conflict_df <- wnc_df %>%
-                tidyr::unnest(cols = wrong_number_cases) %>%
-                dplyr::select(map_version_id, cell_id) %>%
-                dplyr::distinct() %>%
-                dplyr::filter(!is.na(cell_id)) %>%
-                dplyr::group_by(cell_id) %>%
-                dplyr::summarise(versions = paste(sort(unique(map_version_id)), collapse=", "), .groups="drop")
+    html_only = rr_make_single_table_html(
+      tabtitle = row$tabtitle,
+      tabhtml = row$tabhtml,
+      mapping = mapping,
+      show_wrong_number = isTRUE(opts$show_wrong_number_report),
+      include_issues = FALSE,
+      eval_for_tab = NULL
+    )
 
-            if (nrow(wrong_num_conflict_df) > 0) {
-                wrong_num_msgs <- setNames(
-                    paste0("Note: Has wrong number discrepancy in version(s): ", wrong_num_conflict_df$versions),
-                    wrong_num_conflict_df$cell_id
-                )
-            }
-        }
+    html_issues = rr_make_single_table_html(
+      tabtitle = row$tabtitle,
+      tabhtml = row$tabhtml,
+      mapping = mapping,
+      show_wrong_number = isTRUE(opts$show_wrong_number_report),
+      include_issues = TRUE,
+      eval_for_tab = eval_for_tab
+    )
+
+    htmltools::save_html(html_only, file = file_table_only)
+    htmltools::save_html(html_issues, file = file_with_issues)
+
+    png_done = FALSE
+    if (isTRUE(table_png)) {
+      # Render only the table container. This keeps the PNG clean.
+      tryCatch({
+        webshot2::webshot(
+          url = file_table_only,
+          file = file_png,
+          selector = "#rr-table-container",
+          zoom = png_zoom,
+          delay = png_delay,
+          vwidth = png_vwidth,
+          vheight = png_vheight
+        )
+        png_done = TRUE
+      }, error = function(e) {
+        warning(paste0("PNG rendering failed for tabid ", tabid_i, ": ", e$message))
+        png_done = FALSE
+      })
     }
 
-    # 3. Combine messages
-    all_conflict_cells <- unique(c(names(mapping_conflict_msgs), names(wrong_num_msgs)))
-    if (length(all_conflict_cells) > 0) {
-        li = lapply(all_conflict_cells, function(cid) {
-          restore.point("ssfk")
-          msg1 = msg2 = ""
-          if (cid %in% names(mapping_conflict_msgs)) {
-            msg1 <- mapping_conflict_msgs[[cid]]
-          }
-          if (cid %in% names(wrong_num_msgs)) {
-            msg2 <- wrong_num_msgs[[cid]]
-          }
-          # Filter NULLs and join with newline
-          paste(c(msg1, msg2)[!sapply(c(msg1, msg2), is.null)], collapse="\n")
-        })
-        li = setNames(li,all_conflict_cells)
-    } else {
-        li =list()
-    }
-    li
+    out_rows[[length(out_rows) + 1]] = data.frame(
+      tabid = tabid_i,
+      map_prod_id = map_prod_id,
+      map_version_id = map_version_id,
+      table_only_html = file_table_only,
+      with_issues_html = file_with_issues,
+      png = if (png_done) file_png else NA_character_,
+      stringsAsFactors = FALSE
+    )
   }
-  js_conflict_data <- jsonlite::toJSON(cell_conflict_data, auto_unbox = TRUE)
 
+  res = if (length(out_rows) == 0) {
+    data.frame(
+      tabid = character(0),
+      map_prod_id = character(0),
+      map_version_id = character(0),
+      table_only_html = character(0),
+      with_issues_html = character(0),
+      png = character(0),
+      stringsAsFactors = FALSE
+    )
+  } else {
+    dplyr::bind_rows(out_rows)
+  }
 
-  # Generate color map for consistent colors across all loaded maps
-  all_map_dfs <- unlist(all_map_types, recursive = FALSE)
-  all_reg_inds <- unique(unlist(lapply(all_map_dfs, function(df) if("reg_ind" %in% names(df)) unique(df$reg_ind) else NULL)))
-  all_reg_inds <- stats::na.omit(all_reg_inds)
-  reg_color_map <- rr_make_distinct_colors(length(all_reg_inds))
-  names(reg_color_map) <- all_reg_inds
+  message(paste0("rr_single_table wrote outputs to: ", normalizePath(output_dir, mustWork = FALSE)))
+  invisible(res)
+}
 
+# ---- Internal helpers ----
 
+rr_safe_filename = function(x) {
+  x = as.character(x)
+  x = stringi::stri_replace_all_regex(x, "[^A-Za-z0-9_\\-\\.]+", "_")
+  x = stringi::stri_replace_all_regex(x, "_{2,}", "_")
+  x = stringi::stri_replace_all_regex(x, "^_+|_+$", "")
+  x
+}
 
-  # Add a script_file column for easier access
-  parcels$stata_source$script_source$script_file <- basename(parcels$stata_source$script_source$file_path)
+rr_make_single_table_html = function(tabtitle, tabhtml, mapping, show_wrong_number = TRUE, include_issues = FALSE, eval_for_tab = NULL) {
+  restore.point("rr_make_single_table_html")
 
-  do_panel_html <- rr_make_do_panel_html(
-    stata_source = parcels$stata_source$script_source,
-    stata_cmd = parcels$stata_cmd$stata_cmd,
-    stata_run_cmd = parcels$stata_run_cmd$stata_run_cmd,
-    stata_run_log = parcels$stata_run_log$stata_run_log,
-    opts = opts,
-    all_map_types = all_map_types
+  reg_info_json = jsonlite::toJSON(mapping$reg_info %||% list(), auto_unbox = TRUE, null = "null", na = "null")
+  wrong_info_json = jsonlite::toJSON(mapping$wrong_number_info %||% list(), auto_unbox = TRUE, null = "null", na = "null")
+
+  issues_html = ""
+  issues_cellids_json = "[]"
+
+  if (isTRUE(include_issues)) {
+    issues_pack = rr_build_issues_block(mapping = mapping, show_wrong_number = show_wrong_number, eval_for_tab = eval_for_tab)
+    issues_html = issues_pack$issues_html
+    issues_cellids_json = issues_pack$issues_cellids_json
+  }
+
+  css = rr_single_table_css()
+
+  js = rr_single_table_js(
+    reg_info_json = reg_info_json,
+    wrong_info_json = wrong_info_json,
+    show_wrong_number = isTRUE(show_wrong_number),
+    issues_cellids_json = issues_cellids_json
   )
 
-  tab_panel_html <- rr_make_tab_panel_html(tab_main)
-  controls_html <- rr_make_controls_html(all_map_types)
-
-  # --- 4. Write JS and CSS assets ---
-  cat("\nWriting JS and CSS assets...")
-  rr_copy_pkg_assets(output_dir)
-
-  # --- 5. Generate JS data and Assemble final HTML report ---
-
-  # Conditionally generate map data (embedded vs. external)
-  js_maps_data <- "{}"
-  js_manifest_data <- "{}"
-
-  if (isTRUE(opts$embed_data)) {
-    cat("\nGenerating and embedding map data...")
-    processed_types <- purrr::map(all_map_types, function(map_list_for_type) {
-        purrr::map(map_list_for_type, function(map_df) {
-            rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
-        })
-    })
-    js_maps_data <- jsonlite::toJSON(processed_types, auto_unbox = TRUE, null = "null", na = "null")
-  } else {
-    cat("\nGenerating external JSON files for map data...")
-    maps_data_dir <- file.path(output_dir, "maps_data")
-    if (!dir.exists(maps_data_dir)) dir.create(maps_data_dir, recursive = TRUE)
-
-    manifest <- list()
-    for (map_type in names(all_map_types)) {
-        manifest[[map_type]] <- list()
-        for (version_id in names(all_map_types[[map_type]])) {
-            map_df <- all_map_types[[map_type]][[version_id]]
-            processed_map_list <- rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
-            json_content <- jsonlite::toJSON(processed_map_list, auto_unbox = TRUE, null = "null", na = "null")
-
-            file_name <- paste0(map_type, "_", version_id, ".json")
-            file_path <- file.path(maps_data_dir, file_name)
-            relative_path <- file.path("maps_data", file_name)
-
-            writeLines(json_content, file_path)
-            manifest[[map_type]][[version_id]] <- relative_path
-        }
-    }
-    js_manifest_data <- jsonlite::toJSON(manifest, auto_unbox = TRUE)
-    cat("\n\nExternal JSONs generated. Note: This report must now be viewed via a web server.")
-    cat("\nYou can start one from R with: servr::httd('", normalizePath(output_dir, mustWork=FALSE), "')")
-  }
-
-  # --- 5b. Process and generate evaluation data from rme.Rds ---
-  js_evals_data <- "{}"
-  js_eval_manifest_data <- "{}"
-  rme_file <- file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
-
-  processed_eval_data <- NULL
-  if (file.exists(rme_file)) {
-      cat("\nLoading and processing evaluation data from rme.Rds...")
-      tryCatch({
-          rme <- readRDS(rme_file)
-          processed_eval_data <- rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source, opts)
-          if (!is.null(processed_eval_data) && length(processed_eval_data) > 0) {
-            cat("\nSuccessfully processed evaluation data.")
-          } else {
-            cat("\nEvaluation data found, but no applicable issues to report after processing.")
-          }
-      }, error = function(e) {
-          warning("Could not load or process rme.Rds: ", e$message)
-      })
-    } else {
-      cat("\nNo evaluation data file (rme.Rds) found, skipping.")
-  }
-
-  if (!is.null(processed_eval_data)) {
-      if (isTRUE(opts$embed_data)) {
-          js_evals_data <- jsonlite::toJSON(processed_eval_data, auto_unbox = TRUE, null = "null", na = "null")
-      } else {
-          eval_data_dir <- file.path(output_dir, "eval_data")
-          if (!dir.exists(eval_data_dir)) dir.create(eval_data_dir, recursive = TRUE)
-
-          manifest <- list()
-          for (version_id in names(processed_eval_data)) {
-              json_content <- jsonlite::toJSON(processed_eval_data[[version_id]], auto_unbox = TRUE, null = "null", na = "null")
-
-              file_name <- paste0("eval_", version_id, ".json")
-              file_path <- file.path(eval_data_dir, file_name)
-              relative_path <- file.path("eval_data", file_name)
-
-              writeLines(json_content, file_path)
-              manifest[[version_id]] <- relative_path
-          }
-          js_eval_manifest_data <- jsonlite::toJSON(manifest, auto_unbox = TRUE)
-      }
-  }
-
-
-  cat("\nAssembling final HTML report...")
-  html_content <- htmltools::tagList(
-    htmltools::tags$head(
-      htmltools::tags$meta(charset = "UTF-8"),
-      htmltools::tags$meta(`http-equiv` = "X-UA-Compatible", content = "IE=edge"),
-      htmltools::tags$meta(name="viewport", content="width=device-width, initial-scale=1"),
-      htmltools::tags$title(paste("map Report:", basename(project_dir))),
-      htmltools::tags$link(href = "shared/bootstrap.min.css", rel = "stylesheet"),
-      htmltools::tags$link(href = "shared/repbox.css", rel = "stylesheet")
-    ),
-    htmltools::tags$body(
-      htmltools::tags$div(class = "container-fluid",
-        htmltools::HTML(controls_html),
-        htmltools::tags$div(class = "row", style = "height: 95vh;",
-          htmltools::tags$div(id = "do-col-div", class = "col-sm-7",
-            htmltools::HTML(do_panel_html)
-          ),
-          htmltools::tags$div(id = "tabs-col-div", class = "col-sm-5",
-            htmltools::HTML(tab_panel_html)
-          )
-        )
+  htmltools::tagList(
+    htmltools::tags$html(
+      htmltools::tags$head(
+        htmltools::tags$meta(charset = "UTF-8"),
+        htmltools::tags$meta(name = "viewport", content = "width=device-width, initial-scale=1"),
+        htmltools::tags$title(paste0("Table ", htmltools::htmlEscape(as.character(tabtitle)))),
+        htmltools::tags$style(htmltools::HTML(css))
       ),
-      htmltools::tags$script(src = "shared/jquery.min.js"),
-      htmltools::tags$script(src = "shared/bootstrap.min.js"),
-      htmltools::tags$script(htmltools::HTML(paste0("var data_is_embedded = ", tolower(isTRUE(opts$embed_data)), ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var show_wrong_number_report_opt = ", tolower(isTRUE(opts$show_wrong_number_report)), ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var all_maps = ", js_maps_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var report_manifest = ", js_manifest_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var cell_conflict_data = ", js_conflict_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var all_evals = ", js_evals_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var eval_manifest = ", js_eval_manifest_data, ";"))),
-      htmltools::tags$script(src = "shared/report_map.js")
+      htmltools::tags$body(
+        htmltools::tags$div(
+          id = "rr-page",
+          htmltools::tags$div(
+            id = "rr-table-container",
+            htmltools::tags$div(class = "art-tab-div",
+              htmltools::tags$h4(class = "rr-title", htmltools::htmlEscape(as.character(tabtitle))),
+              htmltools::HTML(tabhtml)
+            )
+          ),
+          if (isTRUE(include_issues)) htmltools::HTML(issues_html) else NULL
+        ),
+        htmltools::tags$script(htmltools::HTML(js))
+      )
     )
   )
+}
 
-  report_path <- file.path(output_dir, output_file)
-  htmltools::save_html(html_content, file = report_path)
+rr_single_table_css = function() {
+  paste0(
+    "html, body { margin: 0; padding: 0; background: #ffffff; }\n",
+    "#rr-page { padding: 0; margin: 0; }\n",
+    "#rr-table-container { padding: 0; margin: 0; display: inline-block; }\n",
+    ".rr-title { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif; ",
+    "font-size: 16px; margin: 6px 6px 2px 6px; color: #222; }\n",
+    ".art-tab-div table { font-size: 12px; font-family: Trebuchet MS, Arial Narrow, Tahoma, sans-serif; ",
+    "width: auto; white-space: nowrap; border-collapse: collapse; margin: 6px; }\n",
+    ".art-tab-div table td, .art-tab-div table th { padding: 2px 4px; border: 1px solid #ddd; text-align: center; position: relative; }\n",
+    ".art-tab-div table th { background-color: #f5f5f5; }\n",
+    ".statically-colored { transition: background-color 0.3s ease; }\n",
+    ".wrong-number-cell { }\n",
+    ".issue-cell { outline: 2px solid #dc3545 !important; outline-offset: -2px; }\n",
+    ".rr-issues { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica Neue, Arial, sans-serif; ",
+    "font-size: 13px; padding: 10px 12px; border-top: 1px solid #ddd; margin-top: 6px; }\n",
+    ".rr-issues h5 { margin: 0 0 8px 0; font-size: 15px; }\n",
+    ".rr-issues h6 { margin: 10px 0 4px 0; font-size: 14px; }\n",
+    ".rr-issues .rr-descr { color: #555; font-style: italic; margin: 0 0 6px 0; }\n",
+    ".rr-issues table { border-collapse: collapse; width: 100%; max-width: 1200px; }\n",
+    ".rr-issues th, .rr-issues td { border: 1px solid #ddd; padding: 4px 6px; vertical-align: top; }\n",
+    ".rr-issues th { background: #f7f7f7; }\n",
+    ".rr-badge { display: inline-block; padding: 1px 6px; border-radius: 10px; background: #eef; margin-left: 6px; font-size: 12px; }\n"
+  )
+}
 
-  message(paste("\nReport generated successfully at:", report_path))
-  return(invisible(report_path))
+rr_single_table_js = function(reg_info_json, wrong_info_json, show_wrong_number = TRUE, issues_cellids_json = "[]") {
+  show_flag = if (isTRUE(show_wrong_number)) "true" else "false"
+  paste0(
+    "(function(){\n",
+    "  var reg_info = ", reg_info_json, " || {};\n",
+    "  var wrong_info = ", wrong_info_json, " || [];\n",
+    "  var show_wrong = ", show_flag, ";\n",
+    "  var issue_cellids = ", issues_cellids_json, " || [];\n",
+    "\n",
+    "  function apply_static_coloring() {\n",
+    "    for (var regid in reg_info) {\n",
+    "      if (!reg_info.hasOwnProperty(regid)) continue;\n",
+    "      var info = reg_info[regid];\n",
+    "      if (!info || !info.color || !info.cell_ids) continue;\n",
+    "      var ids = String(info.cell_ids).split(',');\n",
+    "      for (var i = 0; i < ids.length; i++) {\n",
+    "        var cid = ids[i].trim();\n",
+    "        if (!cid) continue;\n",
+    "        var el = document.getElementById(cid);\n",
+    "        if (!el) continue;\n",
+    "        el.style.setProperty('background-color', info.color, 'important');\n",
+    "        el.classList.add('statically-colored');\n",
+    "      }\n",
+    "    }\n",
+    "  }\n",
+    "\n",
+    "  function apply_wrong_number_info() {\n",
+    "    if (!show_wrong) return;\n",
+    "    if (!wrong_info || !Array.isArray(wrong_info) || wrong_info.length === 0) return;\n",
+    "\n",
+    "    var cell_to_color = {};\n",
+    "    for (var regid in reg_info) {\n",
+    "      if (!reg_info.hasOwnProperty(regid)) continue;\n",
+    "      var info = reg_info[regid];\n",
+    "      if (!info || !info.color || !info.cell_ids) continue;\n",
+    "      String(info.cell_ids).split(',').forEach(function(x){ cell_to_color[x.trim()] = info.color; });\n",
+    "    }\n",
+    "\n",
+    "    wrong_info.forEach(function(case_item){\n",
+    "      if (!case_item || !case_item.cell_id) return;\n",
+    "      var cid = String(case_item.cell_id).trim();\n",
+    "      var el = document.getElementById(cid);\n",
+    "      if (!el) return;\n",
+    "      el.classList.add('wrong-number-cell');\n",
+    "      var reg_color = cell_to_color[cid] || '#f0f0f0';\n",
+    "      var gradient = 'linear-gradient(45deg, #cccccc, ' + reg_color + ')';\n",
+    "      el.style.setProperty('background-image', gradient, 'important');\n",
+    "    });\n",
+    "  }\n",
+    "\n",
+    "  function apply_issue_cell_outlines() {\n",
+    "    if (!issue_cellids || !Array.isArray(issue_cellids) || issue_cellids.length === 0) return;\n",
+    "    issue_cellids.forEach(function(cid_raw){\n",
+    "      var cid = String(cid_raw || '').trim();\n",
+    "      if (!cid) return;\n",
+    "      var el = document.getElementById(cid);\n",
+    "      if (!el) return;\n",
+    "      el.classList.add('issue-cell');\n",
+    "    });\n",
+    "  }\n",
+    "\n",
+    "  apply_static_coloring();\n",
+    "  apply_wrong_number_info();\n",
+    "  apply_issue_cell_outlines();\n",
+    "})();\n"
+  )
+}
+
+rr_build_issues_block = function(mapping, show_wrong_number = TRUE, eval_for_tab = NULL) {
+  restore.point("rr_build_issues_block")
+
+  issue_cellids = character(0)
+
+  parts = list()
+  parts[[length(parts) + 1]] = '<div class="rr-issues">'
+  parts[[length(parts) + 1]] = '<h5>Issues</h5>'
+
+  # Wrong number cases
+  if (isTRUE(show_wrong_number) && !is.null(mapping$wrong_number_info) && is.data.frame(mapping$wrong_number_info) && nrow(mapping$wrong_number_info) > 0) {
+    wdf = mapping$wrong_number_info
+    if ("cell_id" %in% names(wdf)) issue_cellids = c(issue_cellids, as.character(wdf$cell_id))
+
+    parts[[length(parts) + 1]] = paste0('<h6>Discrepancies (wrong-number cases) <span class="rr-badge">', nrow(wdf), "</span></h6>")
+    parts[[length(parts) + 1]] = "<table><thead><tr>",
+    parts[[length(parts) + 1]] = "<th>cell_id</th><th>wrong_number_in_cell</th><th>number_in_stata_output</th><th>runid</th><th>script_num</th><th>code_line</th>",
+    parts[[length(parts) + 1]] = "</tr></thead><tbody>"
+    for (i in seq_len(nrow(wdf))) {
+      parts[[length(parts) + 1]] = paste0(
+        "<tr>",
+        "<td><code>", htmltools::htmlEscape(as.character(wdf$cell_id[i])), "</code></td>",
+        "<td>", htmltools::htmlEscape(as.character(wdf$wrong_number_in_cell[i])), "</td>",
+        "<td>", htmltools::htmlEscape(as.character(wdf$number_in_stata_output[i])), "</td>",
+        "<td>", htmltools::htmlEscape(as.character(wdf$runid[i])), "</td>",
+        "<td>", htmltools::htmlEscape(as.character(wdf$script_num[i])), "</td>",
+        "<td>", htmltools::htmlEscape(as.character(wdf$code_line[i])), "</td>",
+        "</tr>"
+      )
+    }
+    parts[[length(parts) + 1]] = "</tbody></table>"
+  } else {
+    parts[[length(parts) + 1]] = "<p class='rr-descr'>No wrong-number discrepancies reported (or disabled by option).</p>"
+  }
+
+  # Evaluation issues (from rme.Rds processed via rr_process_eval_data)
+  if (!is.null(eval_for_tab) && length(eval_for_tab) > 0) {
+    test_names = sort(names(eval_for_tab))
+    for (test_name in test_names) {
+      test_block = eval_for_tab[[test_name]]
+      if (is.null(test_block) || is.null(test_block$issues)) next
+
+      issues = test_block$issues
+      if (is.null(issues) || length(issues) == 0) next
+
+      # Extract cellids for highlighting
+      issue_cellids = c(issue_cellids, rr_extract_cellids_from_issue_records(issues))
+
+      parts[[length(parts) + 1]] = paste0(
+        "<h6>Test: <code>", htmltools::htmlEscape(test_name), "</code>",
+        " <span class='rr-badge'>", length(issues), "</span></h6>"
+      )
+      if (!is.null(test_block$description) && nchar(as.character(test_block$description)) > 0) {
+        parts[[length(parts) + 1]] = paste0("<p class='rr-descr'>", htmltools::htmlEscape(as.character(test_block$description)), "</p>")
+      }
+
+      parts[[length(parts) + 1]] = rr_issue_records_to_html_table(issues)
+    }
+  } else {
+    parts[[length(parts) + 1]] = "<p class='rr-descr'>No evaluation issues for this table/version (or no rme.Rds found).</p>"
+  }
+
+  parts[[length(parts) + 1]] = "</div>"
+
+  issue_cellids = unique(stats::na.omit(issue_cellids))
+  issue_cellids_json = jsonlite::toJSON(as.list(issue_cellids), auto_unbox = TRUE, null = "null", na = "null")
+
+  list(
+    issues_html = paste0(unlist(parts), collapse = "\n"),
+    issues_cellids_json = issue_cellids_json
+  )
+}
+
+rr_extract_cellids_from_issue_records = function(issues) {
+  cids = character(0)
+  for (i in seq_along(issues)) {
+    rec = issues[[i]]
+    if (is.null(rec) || !is.list(rec)) next
+
+    if (!is.null(rec$cellids)) {
+      vals = unlist(stringi::stri_split_fixed(as.character(rec$cellids), ",", omit_empty = TRUE))
+      vals = stringi::stri_trim_both(vals)
+      cids = c(cids, vals)
+    } else if (!is.null(rec$cellid)) {
+      vals = stringi::stri_trim_both(as.character(rec$cellid))
+      cids = c(cids, vals)
+    }
+  }
+  cids
+}
+
+rr_issue_records_to_html_table = function(issues) {
+  if (is.null(issues) || length(issues) == 0) return("")
+
+  df = tryCatch({
+    as.data.frame(purrr::map_dfc(issues, function(x) x), stringsAsFactors = FALSE)
+  }, error = function(e) NULL)
+
+  # If conversion fails (ragged records), fall back to row-wise union of keys
+  if (is.null(df)) {
+    all_keys = unique(unlist(lapply(issues, names)))
+    df = do.call(rbind, lapply(issues, function(rec) {
+      row = setNames(as.list(rep("", length(all_keys))), all_keys)
+      for (k in names(rec)) row[[k]] = as.character(rec[[k]])
+      as.data.frame(row, stringsAsFactors = FALSE)
+    }))
+  }
+
+  # Ensure character columns
+  for (j in seq_along(df)) df[[j]] = as.character(df[[j]])
+
+  headers = names(df)
+  th = paste0("<th>", htmltools::htmlEscape(headers), "</th>", collapse = "")
+  rows = lapply(seq_len(nrow(df)), function(i) {
+    tds = paste0("<td>", htmltools::htmlEscape(df[i, , drop = TRUE]), "</td>", collapse = "")
+    paste0("<tr>", tds, "</tr>")
+  })
+
+  paste0(
+    "<table><thead><tr>", th, "</tr></thead><tbody>",
+    paste0(unlist(rows), collapse = "\n"),
+    "</tbody></table>"
+  )
 }
 ```
-!END_MODIFICATION rr_map_report in report_map.R
 
-!MODIFICATION standardize_reg_ind.R
-scope = "file"
-file = "R/standardize_reg_ind.R"
-is_new_file = false
-description = '''This file is no longer used and is now obsolete. The function `rr_standardize_reg_ind` was removed from the report generation process to preserve original `reg_ind` values from the source mapping files.'''
----
-```r
-# This file is intentionally left empty.
-# The function rr_standardize_reg_ind which was previously in this file is no longer used
-# in the report generation process and has been removed.
-```
-!END_MODIFICATION standardize_reg_ind.R
+!END_MODIFICATION add rr_single_table.R

@@ -130,9 +130,9 @@ function apply_static_coloring(mapping) {
     clear_static_coloring();
     if (!mapping || !mapping.reg_info) return;
     const reg_info = mapping.reg_info;
-    for (const reg_ind in reg_info) {
-        if (reg_info.hasOwnProperty(reg_ind)) {
-            const info = reg_info[reg_ind];
+    for (const regid in reg_info) {
+        if (reg_info.hasOwnProperty(regid)) {
+            const info = reg_info[regid];
             if (info.color && info.cell_ids) {
                 const cell_ids = info.cell_ids.split(',');
                 cell_ids.forEach(id => {
@@ -165,8 +165,8 @@ function apply_wrong_number_info(mapping) {
 
     const cell_to_color = {};
     if (mapping.reg_info) {
-        for (const reg_ind in mapping.reg_info) {
-            const info = mapping.reg_info[reg_ind];
+        for (const regid in mapping.reg_info) {
+            const info = mapping.reg_info[regid];
             if (info.color && info.cell_ids) {
                 info.cell_ids.split(',').forEach(id => {
                     cell_to_color[id.trim()] = info.color;
@@ -315,7 +315,7 @@ function update_all_cell_titles() {
         // 1. Info from current map
         if (cell_map && cell_map[cell_id]) {
             const info = cell_map[cell_id];
-            if (info.reg_ind != null) title_parts.push(`reg_ind: ${info.reg_ind}`);
+            if (info.regid != null) title_parts.push(`regid: ${info.regid}`);
             if (info.runid != null) title_parts.push(`runid: ${info.runid}`);
             if (info.script_file != null && info.code_line != null) {
                 title_parts.push(`script: ${info.script_file}, line: ${info.code_line}`);
@@ -476,9 +476,9 @@ function render_eval_reports(eval_data_for_version) {
 
 function format_issues_html(test_name, issues) {
     const custom_formatters = {
-        "invalid_cellids": (issue) => `<strong>Reg. ${issue.reg_ind}</strong>: Affects cells <code>${issue.cellids}</code>`,
-        "single_col_reg": (issue) => `<strong>Reg. ${issue.reg_ind}</strong>: Affects cells <code>${issue.cellids}</code>`,
-        "multicol_reg_plausibility": (issue) => `<strong>Reg. ${issue.reg_ind}</strong>: Implausible structure for columns <code>${issue.cols}</code>. (Cells: <code>${issue.cellids}</code>)`
+        "invalid_cellids": (issue) => `<strong>Reg. ${issue.regid}</strong>: Affects cells <code>${issue.cellids}</code>`,
+        "single_col_reg": (issue) => `<strong>Reg. ${issue.regid}</strong>: Affects cells <code>${issue.cellids}</code>`,
+        "multicol_reg_plausibility": (issue) => `<strong>Reg. ${issue.regid}</strong>: Implausible structure for columns <code>${issue.cols}</code>. (Cells: <code>${issue.cellids}</code>)`
     };
 
     if (custom_formatters[test_name]) {
