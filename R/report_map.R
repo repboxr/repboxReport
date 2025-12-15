@@ -8,7 +8,7 @@ example = function() {
 
   options(warn=2)
   # Generate report with default options (embedded data)
-  opts = rr_map_report_opts(embed_data = FALSE)
+  opts = rr_map_report_opts(embed_data = FALSE, only_tests = "multicol_reg_plausibility")
   rep_file = rr_map_report(project_dir,opts = opts)
   browseURL(rep_file)
   rstudioapi::filesPaneNavigate(rep_file)
@@ -50,7 +50,7 @@ rr_map_report_opts <- function(output_for = c("all", "reg", "reg_and_map", "none
                              embed_data = TRUE,
                              show_wrong_number_report = NA,
                              only_tests = NULL,
-                             ignore_tests = NULL,
+                             ignore_tests = c("non_reg_cmd"),
                              test_order = NULL) {
   as.list(environment())
 }
@@ -395,10 +395,10 @@ rr_map_report <- function(project_dir,
 #' @param opts A list of options, typically from `rr_map_report_opts()`.
 #' @return A nested list structured for JSON output
 #' @noRd
-rr_process_eval_data <- function(rme, all_map_types, stata_source, opts = list(), ignore_evals = c("non_reg_cmd")) {
+rr_process_eval_data <- function(rme, all_map_types, stata_source, opts = list()) {
     restore.point("rr_process_eval_data")
 
-    rme$evals = rme$evals[!names(rme$evals) %in% ignore_evals]
+    #rme$evals = rme$evals[!names(rme$evals) %in% ignore_evals]
 
     if (is.null(rme) || is.null(rme$evals)) return(NULL)
 

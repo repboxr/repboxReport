@@ -5,7 +5,8 @@ example = function() {
   project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
 
   options(warn=2)
-  res = rr_single_table(project_dir, tabid="3")
+  opts = rr_map_report_opts(embed_data = FALSE, only_tests = "multicol_reg_plausibility")
+  res = rr_single_table(project_dir, tabid="3", opts=opts)
 
   # This should now show classes like "issue_wrong_number" and a list at the bottom
   browseURL(res$with_issues_html[[1]])
@@ -40,7 +41,8 @@ rr_single_table = function(project_dir,
   png_zoom = 2,
   png_delay = 0.2,
   png_vwidth = 1400,
-  png_vheight = 900
+  png_vheight = 900,
+  rme = NULL
 ) {
   restore.point("rr_single_table")
 
@@ -102,13 +104,16 @@ rr_single_table = function(project_dir,
 
   # Evaluation data
   processed_eval_data = NULL
-  rme_file = file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
-  if (file.exists(rme_file)) {
-    tryCatch({
-      rme = readRDS(rme_file)
-      processed_eval_data = rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source, opts)
-    }, error = function(e) warning(paste0("Could not load rme.Rds: ", e$message)))
+  if (is.null(rme)) {
+    rme_file = file.path(project_dir, "fp", paste0("eval_", doc_type), "rme.Rds")
+    if (file.exists(rme_file)) {
+      tryCatch({
+        rme = readRDS(rme_file)
+
+      }, error = function(e) warning(paste0("Could not load rme.Rds: ", e$message)))
+    }
   }
+  processed_eval_data = rr_process_eval_data(rme, all_map_types, parcels$stata_source$script_source, opts)
 
   out_rows = list()
   for (i in seq_len(nrow(tab_rows))) {
@@ -161,7 +166,7 @@ rr_single_table = function(project_dir,
     if (isTRUE(table_png)) {
       tryCatch({
         webshot2::webshot(url = file_table_only, file = file_png, selector = "#rr-table-container",
-          zoom = png_zoom, delay = png_delay, vwidth = png_vwidth, vheight = png_vheight)
+          zoom = png_zoom, delay = png_delay, vwidth = png_vwidth, vheight = png_vheight, quiet = TRUE)
         png_done = TRUE
       }, error = function(e) warning(paste0("PNG failed for tab ", tabid_i, ": ", e$message)))
     }
