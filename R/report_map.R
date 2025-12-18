@@ -8,7 +8,7 @@ example = function() {
 
   options(warn=2)
   # Generate report with default options (embedded data)
-  opts = rr_map_report_opts(embed_data = FALSE, only_tests = "multicol_reg_plausibility")
+  opts = rr_map_report_opts(embed_data = FALSE)
   rep_file = rr_map_report(project_dir,opts = opts)
   browseURL(rep_file)
   rstudioapi::filesPaneNavigate(rep_file)
@@ -45,13 +45,7 @@ example = function() {
 #'
 #' @return A list of default options.
 #' @export
-rr_map_report_opts <- function(output_for = c("all", "reg", "reg_and_map", "none")[3],
-                             map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static")[1],
-                             embed_data = TRUE,
-                             show_wrong_number_report = NA,
-                             only_tests = NULL,
-                             ignore_tests = c("non_reg_cmd"),
-                             test_order = NULL) {
+rr_map_report_opts <- function(output_for = c("all", "reg", "reg_and_map", "none")[3],map_prod_ids = c("map_reg_run", "map_inv_reg_run", "map_reg_static")[1], embed_data = TRUE,show_wrong_number_report = NA, only_tests = NULL,ignore_tests = c("non_reg_cmd"), test_order = NULL) {
   as.list(environment())
 }
 
@@ -73,7 +67,7 @@ rr_map_report <- function(project_dir,
                           output_dir = file.path(project_dir, "reports"),
                           output_file = "map_report.html",
                           doc_type = "art",
-                          opts = NULL) {
+                          opts = rr_map_report_opts()) {
   restore.point("rr_map_report")
   # --- 0. Check dependencies & Options ---
   pkgs <- c("dplyr", "tidyr", "stringi", "htmltools", "jsonlite", "purrr", "randtoolbox")
@@ -415,6 +409,14 @@ rr_process_eval_data <- function(rme, all_map_types, stata_source, opts = list()
 
     # 2. Create lookup from map info to get runid for tests that don't have it
     all_maps_flat_df <- purrr::map_dfr(unlist(all_map_types, recursive = FALSE), ~ if(!is.null(.x) && nrow(.x)>0) .x else NULL, .id = "map_version_id")
+
+  # FIX: unlist() combined with map_dfr creates a composite ID (e.g., "map_reg_run.g25f-mocr--v0").
+  # We must strip the product ID prefix so the join with rme data works on just the version ID.
+  restore.point("before_fix")
+  if (nrow(all_maps_flat_df) > 0) {
+    all_maps_flat_df$map_version_id = stringi::stri_replace_first_regex(all_maps_flat_df$map_version_id, "^[^\\.]+\\.", "")
+  }
+
     regid_to_runid_lookup <- NULL
     if (nrow(all_maps_flat_df) > 0) {
         regid_to_runid_lookup <- all_maps_flat_df %>%
