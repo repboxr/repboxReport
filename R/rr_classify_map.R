@@ -195,22 +195,18 @@ rr_classify_map_report = function(project_dir,
         .class-header { font-size: 1.1em; font-weight: bold; margin-bottom: 5px; color: #337ab7; }
         .class-desc { font-style: italic; color: #555; margin-bottom: 8px; }
 
-        /* Tags */
         .tag-container { margin-bottom: 8px; line-height: 1.8; }
         .label-tag { font-size: 85%; margin-right: 4px; display: inline-block; padding: .2em .6em .3em; }
 
-        /* Key-Value pairs */
         .kv-row { font-size: 0.9em; margin-bottom: 4px; }
         .kv-label { font-weight: bold; color: #666; width: 120px; display: inline-block; vertical-align: top;}
         .kv-val { color: #222; display: inline-block; width: calc(100% - 125px); }
 
-        /* Tables */
         .class-table { width: 100%; font-size: 0.85em; margin-top: 5px; background: #fff; border: 1px solid #ddd; }
         .class-table th { background: #f0f0f0; padding: 4px; border-bottom: 2px solid #ddd; font-weight: 600; color: #444; }
         .class-table td { padding: 4px; border-bottom: 1px solid #eee; vertical-align: top; }
         .class-table tr:last-child td { border-bottom: none; }
 
-        .cell-link { display: none; } /* Hidden, interaction is via row click */
         .var-type-badge { font-size: 0.8em; padding: 1px 4px; border-radius: 3px; background: #eee; color: #555; border: 1px solid #ccc; white-space: nowrap; }
 
         /* Summary Grouping Styles */
@@ -222,11 +218,17 @@ rr_classify_map_report = function(project_dir,
         .interactive-row { cursor: pointer; transition: background-color 0.1s; }
         .interactive-row:hover { background-color: #e6f2ff; }
 
-        /* Active Regression Highlight in Table */
+        /* Active Row in Right Panel (Yellow Highlight) */
+        .active-class-row {
+            background-color: #ffffd0 !important;
+            outline: 1px solid #e6c600;
+        }
+
+        /* Active Regression Highlight in Table (Red Borders) */
         .active-regression-group {
-            background-color: rgba(51, 122, 183, 0.1) !important; /* Light tint */
-            border-left: 2px solid #337ab7 !important;
-            border-right: 2px solid #337ab7 !important;
+            background-color: rgba(217, 83, 79, 0.05) !important; /* Very light red tint */
+            border-left: 2px solid #d9534f !important; /* Bootstrap 'danger' red */
+            border-right: 2px solid #d9534f !important;
         }
 
         /* Ensure selected cell (yellow) stays on top */
