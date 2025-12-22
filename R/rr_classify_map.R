@@ -41,6 +41,7 @@ example = function() {
   rstudioapi::filesPaneNavigate(project_dir)
 }
 # FILE: rr_classify_map.R
+# FILE: rr_classify_map.R
 
 #' Load the regression classification product and associated map info
 rr_load_reg_classify = function(project_dir, doc_type="art") {
@@ -86,7 +87,7 @@ rr_classify_map_report = function(project_dir,
                                   opts = rr_map_report_opts()) {
   restore.point("rr_classify_map_report")
 
-  # 0. Setup directories and assets (CRITICAL FIX: was missing in original)
+  # 0. Setup directories and assets
   if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
   rr_copy_pkg_assets(output_dir)
 
@@ -145,7 +146,6 @@ rr_classify_map_report = function(project_dir,
   tab_panel_html = rr_make_tab_panel_html(tab_main)
 
   # Create hidden controls for report_map.js compatibility
-  # We pre-select the single available map and version
   controls_html = paste0(
     '<div style="display:none;">',
       '<select id="map_type_selector"><option value="', map_prod_id, '" selected>', map_prod_id, '</option></select>',
@@ -156,35 +156,21 @@ rr_classify_map_report = function(project_dir,
   classify_panel_html = rr_make_classify_panel_html()
 
   # 5. Handle Data Embedding vs External JSON
-
   js_maps_data = "{}"
   js_manifest_data = "{}"
   js_class_data = "null"
   js_class_file = "null"
 
-  # Setup color map for visual consistency
   all_regids = if("regid" %in% names(map_df)) unique(stats::na.omit(map_df$regid)) else character(0)
   reg_color_map = rr_make_distinct_colors(length(all_regids))
   names(reg_color_map) = all_regids
 
   if (isTRUE(opts$embed_data)) {
-    # -- EMBEDDED MODE --
-
-    # Process Map
     processed_map = rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
-    # Structure needs to match what report_map.js expects: all_maps[type][ver]
-    maps_struct = list()
-    maps_struct[[map_prod_id]] = list()
-    maps_struct[[map_prod_id]][[map_ver_id]] = processed_map
+    maps_struct = list(); maps_struct[[map_prod_id]] = list(); maps_struct[[map_prod_id]][[map_ver_id]] = processed_map
     js_maps_data = jsonlite::toJSON(maps_struct, auto_unbox = TRUE, null = "null", na = "null")
-
-    # Process Classification
     js_class_data = jsonlite::toJSON(class_df, auto_unbox = TRUE, null = "null", na = "null")
-
   } else {
-    # -- EXTERNAL MODE --
-
-    # Process & Write Map
     processed_map = rr_process_single_map_for_js(map_df, reg_color_map, parcels$stata_source$script_source)
     maps_data_dir = file.path(output_dir, "maps_data")
     if (!dir.exists(maps_data_dir)) dir.create(maps_data_dir, recursive = TRUE)
@@ -193,29 +179,19 @@ rr_classify_map_report = function(project_dir,
     map_json = jsonlite::toJSON(processed_map, auto_unbox = TRUE, null = "null", na = "null")
     writeLines(map_json, file.path(maps_data_dir, map_filename))
 
-    # Build Manifest
-    manifest = list()
-    manifest[[map_prod_id]] = list()
-    manifest[[map_prod_id]][[map_ver_id]] = file.path("maps_data", map_filename)
+    manifest = list(); manifest[[map_prod_id]] = list(); manifest[[map_prod_id]][[map_ver_id]] = file.path("maps_data", map_filename)
     js_manifest_data = jsonlite::toJSON(manifest, auto_unbox = TRUE)
 
-    # Process & Write Classification
     class_data_dir = file.path(output_dir, "class_data")
     if (!dir.exists(class_data_dir)) dir.create(class_data_dir, recursive = TRUE)
-
     class_filename = paste0("class_", class_info$ver_id, ".json")
     class_json = jsonlite::toJSON(class_df, auto_unbox = TRUE, null = "null", na = "null")
     writeLines(class_json, file.path(class_data_dir, class_filename))
-
     js_class_file = jsonlite::toJSON(file.path("class_data", class_filename), auto_unbox = TRUE)
   }
 
   # 6. Assemble HTML
-  # We reuse the conflict data logic logic (empty here as we have 1 version) or simply pass empty
-  js_conflict_data = "{}"
-  js_evals_data = "{}" # Simplification: Skipping eval data for now or you can reuse rr_map_report logic
-  js_eval_manifest = "{}"
-
+  # Note: Added specific CSS overrides for line numbers and compact summaries
   html_content = htmltools::tagList(
     htmltools::tags$head(
       htmltools::tags$meta(charset = "UTF-8"),
@@ -223,29 +199,48 @@ rr_classify_map_report = function(project_dir,
       htmltools::tags$link(href = "shared/bootstrap.min.css", rel = "stylesheet"),
       htmltools::tags$link(href = "shared/repbox.css", rel = "stylesheet"),
       htmltools::tags$style(htmltools::HTML("
+        /* 3rd Column Layout */
         #classify-col-div { height: 100%; padding: 0; border: 1px solid #ddd; border-left: none; border-radius: 0 4px 4px 0; overflow-y: auto; background: #fafafa; }
         #classify-content { padding: 10px; }
+
+        /* Compact Line Numbers Overrides */
+        #do-col-div { padding-left: 2px !important; }
+        .code-line-td { padding-left: 1px !important; padding-right: 3px !important; width: 1%; white-space: nowrap; font-size: 0.9em; }
+        .do-pre { padding-left: 2px !important; }
+
+        /* Classification Styling */
         .class-section { margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
         .class-section:last-child { border-bottom: none; }
         .class-header { font-size: 1.1em; font-weight: bold; margin-bottom: 5px; color: #337ab7; }
         .class-desc { font-style: italic; color: #555; margin-bottom: 8px; }
+
+        /* Tags */
         .tag-container { margin-bottom: 8px; line-height: 1.8; }
-        .label-tag { font-size: 85%; margin-right: 4px; display: inline-block; }
+        .label-tag { font-size: 85%; margin-right: 4px; display: inline-block; padding: .2em .6em .3em; }
+
+        /* Key-Value pairs */
         .kv-row { font-size: 0.9em; margin-bottom: 4px; }
         .kv-label { font-weight: bold; color: #666; width: 120px; display: inline-block; vertical-align: top;}
         .kv-val { color: #222; display: inline-block; width: calc(100% - 125px); }
+
+        /* Tables */
         .class-table { width: 100%; font-size: 0.85em; margin-top: 5px; background: #fff; border: 1px solid #ddd; }
         .class-table th { background: #f0f0f0; padding: 4px; border-bottom: 2px solid #ddd; font-weight: 600; color: #444; }
         .class-table td { padding: 4px; border-bottom: 1px solid #eee; vertical-align: top; }
         .class-table tr:last-child td { border-bottom: none; }
         .cell-link { cursor: pointer; color: #337ab7; font-family: monospace; }
         .cell-link:hover { text-decoration: underline; color: #23527c; }
-        .var-type-badge { font-size: 0.8em; padding: 1px 4px; border-radius: 3px; background: #eee; color: #555; border: 1px solid #ccc; }
+        .var-type-badge { font-size: 0.8em; padding: 1px 4px; border-radius: 3px; background: #eee; color: #555; border: 1px solid #ccc; white-space: nowrap; }
+
+        /* Summary Grouping Styles */
+        .summary-group { background: #fff; border: 1px solid #e5e5e5; border-radius: 4px; padding: 8px; margin-bottom: 10px; border-left: 3px solid #337ab7; }
+        .summary-reg-list { font-family: monospace; color: #333; word-break: break-all; }
+        .summary-dim-line { font-size: 0.9em; color: #666; margin-top: 4px; }
       "))
     ),
     htmltools::tags$body(
       htmltools::tags$div(class = "container-fluid",
-        htmltools::HTML(controls_html), # Hidden controls for JS
+        htmltools::HTML(controls_html),
         htmltools::tags$div(class = "row", style = "height: 95vh;",
           htmltools::tags$div(id = "do-col-div", class = "col-sm-4", htmltools::HTML(do_panel_html)),
           htmltools::tags$div(id = "tabs-col-div", class = "col-sm-4", htmltools::HTML(tab_panel_html)),
@@ -255,20 +250,15 @@ rr_classify_map_report = function(project_dir,
       htmltools::tags$script(src = "shared/jquery.min.js"),
       htmltools::tags$script(src = "shared/bootstrap.min.js"),
 
-      # Inject Data for report_map.js compatibility
       htmltools::tags$script(htmltools::HTML(paste0("var data_is_embedded = ", tolower(isTRUE(opts$embed_data)), ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var show_wrong_number_report_opt = ", tolower(isTRUE(opts$show_wrong_number_report)), ";"))),
-
-      # Maps Data
       htmltools::tags$script(htmltools::HTML(paste0("var all_maps = ", js_maps_data, ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var report_manifest = ", js_manifest_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var cell_conflict_data = ", js_conflict_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var all_evals = ", js_evals_data, ";"))),
-      htmltools::tags$script(htmltools::HTML(paste0("var eval_manifest = ", js_eval_manifest, ";"))),
-
-      # Classification Data
       htmltools::tags$script(htmltools::HTML(paste0("var all_classifications = ", js_class_data, ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var classification_file = ", js_class_file, ";"))),
+
+      # Dummy vars for report_map.js
+      htmltools::tags$script(htmltools::HTML("var cell_conflict_data = {}; var all_evals = {}; var eval_manifest = {};")),
 
       htmltools::tags$script(src = "shared/report_map.js"),
       htmltools::tags$script(src = "shared/rr_classify_map.js")
@@ -277,10 +267,6 @@ rr_classify_map_report = function(project_dir,
 
   report_path = file.path(output_dir, output_file)
   htmltools::save_html(html_content, file = report_path)
-
-  if (!isTRUE(opts$embed_data)) {
-     message(paste("\nExternal data report generated. View via server: servr::httd('", normalizePath(output_dir, mustWork=FALSE), "')"))
-  }
   return(invisible(report_path))
 }
 
@@ -288,7 +274,6 @@ rr_make_classify_panel_html = function() {
   paste0(
     '<div id="classify-content">',
     '  <h4>Regression Classification</h4>',
-    '  <p class="text-muted small">Click on a regression cell in the middle table to see details.</p>',
     '  <div id="classify-details"></div>',
     '</div>'
   )
