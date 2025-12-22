@@ -1,7 +1,9 @@
 DESCRIPTION
-R/report_map.R
+R/rr_classify_map.R
+R/rr_map.R
 R/rr_table.R
 R/rr_utils.R
 README.md
 inst/www/repbox.css
 inst/www/report_map.js
+inst/www/rr_classify_map.js

@@ -103,6 +103,9 @@ group_template = '''
 {{files}}
 '''
 
+[[reg_classify]]
+
+{{project_dir}}/fp/art_prod/stata_run_log.Rds
 
 [[schemas]]
 

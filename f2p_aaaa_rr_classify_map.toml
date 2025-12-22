@@ -1,0 +1,351 @@
+opt_prompt_file = "my_prompt.Rmd"
+
+project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
+report_dir = "~/repbox/projects_gha_new/aejapp_10_4_6/reports"
+repboxHtml_dir = "/home/rstudio/repbox/repboxHtml"
+repboxRegmap_dir = "/home/rstudio/repbox/repboxRegmap"
+
+
+include_files = '''
+
+'''
+exclude_files = '''
+*.toml
+'''
+
+template = '''
+
+Below are relevant files from my R project.
+
+################################################
+# R project DESCRIPTION file (repboxReport)
+################################################
+
+{{DESCRIPTION}}
+
+################################################
+# R code files: (repboxReport)
+################################################
+
+{{R}}
+
+################################################
+# js and css files in inst/www (repboxReport)
+################################################
+
+{{inst_www}}
+
+
+####################################################
+# From repboxRegmap
+# Example report Rds file: rme.RDS and markdown report
+# Code from repboxRegmap to make markdown report
+####################################################
+
+{{map_reg}}
+
+####################################################
+# Regression classification
+####################################################
+
+Regression classifications will be generated based
+on the article and a concrete mapping using this JSON schema:
+
+
+JSON RESPONSE SCHEMA:
+```json
+
+JSON RESPONSE SCHEMA:
+{
+  "type": "array",
+  "items": {
+    "type": "object",
+    "properties": {
+      "tabid": {
+        "type": ["string"],
+        "description": "The table ID as stated in the list of regressions above."
+      },
+      "regid": {
+        "type": ["string"],
+        "description": "The regression ID as stated in the field 'regid' in the list of regressions shown above."
+      },
+      "short_descr": {
+        "type": "string",
+        "description": "A short description of what the regression analyzes based on the information in the article."
+      },
+      "regression_tags": {
+        "type": "string",
+        "pattern": "^([a-z0-9_]+)(,[a-z0-9_]+)*$",
+        "description": "A string describing a comma separated list containing each of the following tags that apply to the regression, e.g. \"main_result,causal_effect,DID,panel_data\".
+Here is the list description of all tags that could apply to the the current regression. Check for every tag, whether it applies and if yes, add it to the comma separated list.
+
+- main_result: a main result of the paper
+- is_preferred_spec: the article suggests that this regression is the preferred specification in the table
+- robustness: a robustness check
+- causal_effect: estimates a causal effect
+- heterogeneous_effect: analysises a heterogeneous effect
+- did: difference in difference analysis (including specializations like tripple diff)
+- ddd: a tripple diff DID analysis
+- did_staggered: a DID analysis with staggered treatment adoption
+- did_continuous: a DID analysis with a continuous variable for the treatment effect instead of dummies
+- event_study: the article refers to the regression as an event study
+- iv: instrumental variables regression
+- iv_first_stage: the regression is the first stage of an IV regression
+- rdd: regresion discontinuity design
+- rct: analysis data from a randomized controlled trial
+- lab_experiment: analyses data from a laboratory experiment
+- field_experiment: analyses data from a field experiment
+- panel_data: analyses a panel data set
+- time_series: analyses pure time series data
+- cross_section: analyses pure cross section data
+- balance_test: a balance test in a balance table
+- placebo_test: a placebo test
+- permutation_test: a permutation test
+- has_fixed_effects: regression uses fixed effects
+      },
+      "vars": {
+        "type": "array",
+        "description": "An array of all variables important for this regression, like dependent variable, explanatory variable whose causal effect is estimated, control variables shown in the paper, cluster variable for standard errors. You don't need to add control variables 'x_co' that are not shown in the table, but please try to add all fixed effect variables.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "label_in_article": {
+              "type": "string",
+              "description": "The label of the variable as shown in the article: either in the table directly or used in the text of the article."
+            },
+            "var_in_code": {
+              "type": "string",
+              "description": "The variable name as used in the Stata code. If the regressor is an interaction effect between to variables, e.g. 'x' and 'z' use the notation 'x#z'. Sometimes fixed effects are implemented by many dummy variables like region1, region2, region3 etc. Use a short glob like 'region*' to describe such dummy sets."
+            },
+            "var_type": {
+              "type": "string",
+              "description": "A short characteriztion of the variable type: 'd' for dependented variable, 'x_eff' for an explanatory variable whose causal effect shall be estimated, 'x_co' an explanatory variable that is a control variable, 'fe' for a fixed effect, 'clu' for a variable that determines the cluster robust standard errors,'weight' a regression weight,  'instrument' an excluded instrument",
+              "enum": ["d","x_eff","x_co","fe","clu","weight","instrument"]
+            },
+            "cell_id_estimate": {
+              "type": ["string", "null"],
+              "description": "For explanatory variables whose coefficient estimate is shown in the table, please write down the cell_id in which the coefficient estimate is shown."
+            },
+            "unit": {
+              "type": "string",
+              "description": "If the article, README or code provides some information about the unit of the variable, please state the unit here. Otherwise leave the field empty. If the variable is in logs just write log. If it is a growth_rate just write growth_rate. If it is a difference in some known unit write diff_unit where you replace unit. If it is a difference but you don't know the unit, just write diff."
+            }
+          }
+        }
+      },
+      "dimensions_same_as_regid": {
+        "type": "string",
+        "description": "If the dimensions described below are the same as in an earler regression where you have already described the dimensions, you can just state the regid of that earlier regression here and don't describe the dimensions again in order to save space. Only enter one regid. If at least in some aspect the dimensions are different from all previous regressions, leave this field empty and fully specify the dimesions field below.",
+      },
+      "dimensions": {
+        "type": "array",
+        "description": "We also would like to know the variables that describe the dimensions of the data set to understand the units of analysis. E.g. in a macroeconomic panel data set the dimensions might be described by variables 'country' and 'year'. If you have filled 'dimensions_same_as_regid' you can leave this array empty.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "dim_class": {
+              "type": "string",
+              "description": "The broad class of the dimension, time is any time dimension, region can be a country, city etc, person could be an individual or a group, entity could be a firm, institution etc, an attribute could be be a sector for a firm, an income group for a person, a cohort etc, ",
+              "enum": ["time","region","person","entity","attribute", "other"]
+            },
+            "dim_type": {
+              "type": "string",
+              "description": "Finer type of the dimension",
+              "enum": ["year", "datetime", "time", "day", "cohort","period_experiment",
+    "season", "season_weekday","season_month",
+    "country", "city","state","province","county","village","region",
+    "individual", "group", "firm", "facility","bank",
+    "station",
+    "sector","sector_sic2","sector_sic3","sector_sic4",
+    "fund", "asset",
+    "other", "unknown","constant",
+    "wave", "strata","session",
+    "household",
+    "patent_class"]
+            },
+            "other_dim_type": {
+              "type": "string",
+              "description": "If you have chosen dim_type 'other' above you can enter here a short label for the dimension type that best fits the dimension. Otherwise leave empty."
+            },
+            "var_in_code": {
+              "type": "string",
+              "description": "A variable name as used in the Stata code that describes this dimenion. If only described by a dummy variable set, leave empty."
+            },
+            "dummy_set": {
+              type: "string",
+              "description": "Some dimensions are described by a dummy variable set, like region1, region2, region3 etc. If that is the case use a short glob like 'region*' to describe it. Otherwise leave this field empty."
+            },
+            "unit": {
+              "type": "string",
+              "description": "If the article, README or code provides some information about the unit of the variable, please state the unit here. Otherwise leave the field empty."
+            }
+          }
+        }
+      },
+      "reported_stats": {
+        "type": "array",
+        "description": "Beyond coefficient estimates and standard errors or p-values for certain coefficients, regression tables often report a subset of general regression statistics, like number of observations, R-squared etc. They shall be reported here.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "stat_label": {
+              "type": "string",
+              "description": "A general label for the regression stat. For the stats below use the specified label. For other stats choose your own suitable label.
+
+- num_obs: number of observations
+- num_clu: number of clusters
+- r_squared: R suqared
+- adj_r_squared: adjusted R squared
+              "
+            },
+            "value_table": {
+              "type":  ["numeric","null"],
+              "description": "The numeric value of the statistic as shown in the table."
+            },
+            "cell_id": {
+              "type":  ["string"],
+              "description": "The cell_id in which the numeric value of the statistic is shown in the table"
+            },
+            "value_code": {
+              "type": ["numeric","null"],
+              "description": "The numeric value of the statistic as computed by the Stata code, if available."
+            }
+          }
+        }
+      },
+      "standard_error_type": {
+        "type": "string",
+        "description": "Does the article or table provide any information about the type of standard error? We can of course infer it from the Stata code, but here we just ask what is reported in the table / article. Pick one of the types below or a new type if the actual type is not listed.
+
+- cluster_robust
+- robust
+- IID
+- unknown
+"
+      },
+      "error_in_prompt_or_media": {
+        "type": ["string", "null"],
+        "description": "Is there some inconsistency in the prompt or the attached media files, e.g. the media don't show the tables listed in the prompt etc. This could be an indicator for some error in my pipeline. If such an inconsistency exists, briefly describe it only for the first regression. If all seems ok return null. In other regressions than the first regressions, always set this field to null."
+      }
+    }
+  }
+}
+```
+
+Here is the structure of an example Rds file for generated
+regression classification that we will load:
+
+{{reg_classify}}
+
+
+
+##################################
+# Coding Style
+##################################
+
+When you write R code:
+
+- Prefer stringi functions for string operations (exception paste0 is fine)
+- Prefer = as assignment operator over <-
+- DO NOT use `.data$col` syntax within dplyr verbs e.g. do not write `filter(.data$x>0)` just write `filter(x>0)` instead.
+
+##################################
+# Your Task
+##################################
+
+Improve the map report.
+
+'''
+
+
+
+file_template = '''
+
+# FILE: {{filename}}
+```
+{{filetext}}
+```
+# END OF FILE: {{filename}}
+
+-----------------------------------------------------------
+'''
+
+
+[[repdb]]
+
+include_files = '''
+{{project_dir}}/repdb/stata_source.Rds
+{{project_dir}}/repdb/stata_run_cmd.Rds
+{{project_dir}}/repdb/stata_cmd.Rds
+{{project_dir}}/repdb/stata_run_log.Rds
+'''
+
+[[map_reg]]
+
+include_files = '''
+{{project_dir}}/fp/eval_art/rme.Rds
+{{project_dir}}/fp/eval_art/rme_report.md
+{{repboxRegmap_dir}}/R/rme_report.R
+'''
+
+
+group_template = '''
+################################################
+# Readme file
+################################################
+{{files}}
+'''
+
+[[reg_classify]]
+
+include_files = '''
+{{project_dir}}/fp/prod_art/reg_classify/man_g30p-r1_g25f-mocr/v0/prod_df.Rds
+{{project_dir}}/fp/prod_art/reg_classify/man_g30p-r1_g25f-mocr/v0/pru.Rds
+'''
+
+[[report_html]]
+
+include_files = '''
+{{report_dir}}/classify_map_report.html
+'''
+
+
+################################################
+# Special handling for R code
+################################################
+[[R]]
+include_files  = '''
+R/*.R
+R/*.r
+'''
+
+[[inst_www]]
+include_files  = '''
+inst/www/*.*
+'''
+
+
+
+[[README]]
+include_files = "README.md"
+group_template = '''
+################################################
+# Readme file
+################################################
+{{files}}
+'''
+file_template = '''
+```md
+{{filetext}}
+```
+'''
+
+[[DESCRIPTION]]
+include_files = "DESCRIPTION"
+file_template = '''
+```
+{{filetext}}
+```
+'''
+
+
