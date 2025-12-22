@@ -242,10 +242,10 @@ rr_classify_map_report = function(project_dir,
     htmltools::tags$body(
       htmltools::tags$div(class = "container-fluid",
         htmltools::HTML(controls_html),
-        htmltools::tags$div(class = "row", style = "height: 95vh;",
-          htmltools::tags$div(id = "do-col-div", class = "col-sm-4", htmltools::HTML(do_panel_html)),
+        htmltools::tags$div(class = "row", style = "height: 100vh;",
+          htmltools::tags$div(id = "do-col-div", class = "col-sm-5", htmltools::HTML(do_panel_html)),
           htmltools::tags$div(id = "tabs-col-div", class = "col-sm-4", htmltools::HTML(tab_panel_html)),
-          htmltools::tags$div(id = "classify-col-div", class = "col-sm-4", htmltools::HTML(classify_panel_html))
+          htmltools::tags$div(id = "classify-col-div", class = "col-sm-3", htmltools::HTML(classify_panel_html))
         )
       ),
       htmltools::tags$script(src = "shared/jquery.min.js"),
