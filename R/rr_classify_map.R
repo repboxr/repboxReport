@@ -41,26 +41,20 @@ example = function() {
   rstudioapi::filesPaneNavigate(project_dir)
 }
 # FILE: rr_classify_map.R
-# FILE: rr_classify_map.R
 
 #' Load the regression classification product and associated map info
 rr_load_reg_classify = function(project_dir, doc_type="art") {
   restore.point("rr_load_reg_classify")
 
   fp_dir = file.path(project_dir, "fp", paste0("prod_", doc_type))
-  # Find the reg_classify product directory
   prod_id = "reg_classify"
   ver_dirs = fp_all_ok_ver_dirs(fp_dir, prod_id = prod_id)
 
   if (length(ver_dirs) == 0) return(NULL)
 
-  # Take the latest version (first in list)
   ver_dir = ver_dirs[1]
-
-  # Load classification data
   class_df = fp_load_prod_df(ver_dir)
 
-  # Load project run info (pru) to get the map version used for classification
   pru_file = file.path(ver_dir, "pru.Rds")
   map_ver_info = NULL
   if (file.exists(pru_file)) {
@@ -87,11 +81,9 @@ rr_classify_map_report = function(project_dir,
                                   opts = rr_map_report_opts()) {
   restore.point("rr_classify_map_report")
 
-  # 0. Setup directories and assets
   if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
   rr_copy_pkg_assets(output_dir)
 
-  # 1. Load classification data
   class_info = rr_load_reg_classify(project_dir, doc_type = doc_type)
 
   if (is.null(class_info) || is.null(class_info$class_df)) {
@@ -100,11 +92,9 @@ rr_classify_map_report = function(project_dir,
   }
 
   class_df = class_info$class_df
-  # Ensure IDs are characters for JS matching
   if ("tabid" %in% names(class_df)) class_df$tabid = as.character(class_df$tabid)
   if ("regid" %in% names(class_df)) class_df$regid = as.character(class_df$regid)
 
-  # 2. Load the SPECIFIC map version associated with this classification
   if (is.null(class_info$map_ver_info)) {
     stop("Could not find map_ver_info in pru.Rds of the classification product.")
   }
@@ -119,22 +109,17 @@ rr_classify_map_report = function(project_dir,
 
   map_df = fp_load_prod_df(map_ver_dir)
 
-  # Structure into the list format expected by helper functions
   all_map_types = list()
   all_map_types[[map_prod_id]] = list()
   all_map_types[[map_prod_id]][[map_ver_id]] = map_df
 
-  # 3. Load Parcels & Tab Main
   parcels = repboxDB::repdb_load_parcels(project_dir, c("stata_source", "stata_cmd", "stata_run_cmd", "stata_run_log"))
-  # Add script_file column
   parcels$stata_source$script_source$script_file <- basename(parcels$stata_source$script_source$file_path)
 
   fp_dir = file.path(project_dir, "fp", paste0("prod_", doc_type))
   tab_main_info = rai_pick_tab_ver(fp_dir, "tab_main")
   tab_main = fp_load_prod_df(tab_main_info$ver_dir)
 
-  # 4. Generate HTML Panels
-  # We reuse helpers from rr_map.R
   do_panel_html = rr_make_do_panel_html(
     parcels$stata_source$script_source,
     parcels$stata_cmd$stata_cmd,
@@ -145,7 +130,6 @@ rr_classify_map_report = function(project_dir,
   )
   tab_panel_html = rr_make_tab_panel_html(tab_main)
 
-  # Create hidden controls for report_map.js compatibility
   controls_html = paste0(
     '<div style="display:none;">',
       '<select id="map_type_selector"><option value="', map_prod_id, '" selected>', map_prod_id, '</option></select>',
@@ -155,7 +139,6 @@ rr_classify_map_report = function(project_dir,
 
   classify_panel_html = rr_make_classify_panel_html()
 
-  # 5. Handle Data Embedding vs External JSON
   js_maps_data = "{}"
   js_manifest_data = "{}"
   js_class_data = "null"
@@ -190,8 +173,6 @@ rr_classify_map_report = function(project_dir,
     js_class_file = jsonlite::toJSON(file.path("class_data", class_filename), auto_unbox = TRUE)
   }
 
-  # 6. Assemble HTML
-  # Note: Added specific CSS overrides for line numbers and compact summaries
   html_content = htmltools::tagList(
     htmltools::tags$head(
       htmltools::tags$meta(charset = "UTF-8"),
@@ -228,14 +209,32 @@ rr_classify_map_report = function(project_dir,
         .class-table th { background: #f0f0f0; padding: 4px; border-bottom: 2px solid #ddd; font-weight: 600; color: #444; }
         .class-table td { padding: 4px; border-bottom: 1px solid #eee; vertical-align: top; }
         .class-table tr:last-child td { border-bottom: none; }
-        .cell-link { cursor: pointer; color: #337ab7; font-family: monospace; }
-        .cell-link:hover { text-decoration: underline; color: #23527c; }
+
+        .cell-link { display: none; } /* Hidden, interaction is via row click */
         .var-type-badge { font-size: 0.8em; padding: 1px 4px; border-radius: 3px; background: #eee; color: #555; border: 1px solid #ccc; white-space: nowrap; }
 
         /* Summary Grouping Styles */
         .summary-group { background: #fff; border: 1px solid #e5e5e5; border-radius: 4px; padding: 8px; margin-bottom: 10px; border-left: 3px solid #337ab7; }
         .summary-reg-list { font-family: monospace; color: #333; word-break: break-all; }
         .summary-dim-line { font-size: 0.9em; color: #666; margin-top: 4px; }
+
+        /* Interactive Rows */
+        .interactive-row { cursor: pointer; transition: background-color 0.1s; }
+        .interactive-row:hover { background-color: #e6f2ff; }
+
+        /* Active Regression Highlight in Table */
+        .active-regression-group {
+            background-color: rgba(51, 122, 183, 0.1) !important; /* Light tint */
+            border-left: 2px solid #337ab7 !important;
+            border-right: 2px solid #337ab7 !important;
+        }
+
+        /* Ensure selected cell (yellow) stays on top */
+        .cell-highlight {
+            outline: 3px solid #ffd700 !important;
+            z-index: 10;
+            position: relative;
+        }
       "))
     ),
     htmltools::tags$body(
@@ -257,7 +256,6 @@ rr_classify_map_report = function(project_dir,
       htmltools::tags$script(htmltools::HTML(paste0("var all_classifications = ", js_class_data, ";"))),
       htmltools::tags$script(htmltools::HTML(paste0("var classification_file = ", js_class_file, ";"))),
 
-      # Dummy vars for report_map.js
       htmltools::tags$script(htmltools::HTML("var cell_conflict_data = {}; var all_evals = {}; var eval_manifest = {};")),
 
       htmltools::tags$script(src = "shared/report_map.js"),

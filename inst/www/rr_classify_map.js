@@ -2,25 +2,17 @@
 
 /**
  * Helper: Resolve dimension inheritance and clean vars for grouping comparison.
- * Returns a simplified object representing the regression's structure.
  */
 function get_resolved_structure(reg, all_regs_in_table) {
-    // 1. Resolve dimensions
     let dims = reg.dimensions;
     if (reg.dimensions_same_as_regid) {
-        // Find the parent regression within the same table context
         const parent = all_regs_in_table.find(r => r.regid === reg.dimensions_same_as_regid);
         if (parent && parent.dimensions) {
             dims = parent.dimensions;
         }
     }
 
-    // Clone and clean dimensions for signature (remove fields that might vary like cell_ids if present)
     let dims_sig = dims ? JSON.parse(JSON.stringify(dims)) : [];
-
-    // 2. Clone and clean variables for signature
-    // We remove 'cell_id_estimate' so that variables appearing in different cells
-    // but representing the same concept are grouped together.
     let vars_sig = reg.vars ? JSON.parse(JSON.stringify(reg.vars)) : [];
     vars_sig.forEach(v => { delete v.cell_id_estimate; });
 
@@ -32,13 +24,16 @@ function get_resolved_structure(reg, all_regs_in_table) {
 }
 
 /**
- * Renders a compact summary of all regressions in a table, grouped by identical structure.
+ * Renders a compact summary of all regressions in a table.
  */
 function update_table_summary_panel(tabid) {
+    // Clear regression highlight when going back to summary
+    $(".active-regression-group").removeClass("active-regression-group");
+    if(window.clear_all_highlights) window.clear_all_highlights();
+
     const $detail = $("#classify-details");
     $detail.empty();
 
-    // Check data availability
     if (!window.all_classifications || !Array.isArray(window.all_classifications)) {
         if (typeof window.classification_file !== 'undefined' && window.classification_file) {
              $detail.append('<div class="alert alert-info">Loading classification data...</div>');
@@ -55,16 +50,13 @@ function update_table_summary_panel(tabid) {
         return;
     }
 
-    // Header
     $detail.append('<h4>Table ' + tabid + ' Overview</h4>');
     $detail.append('<p class="text-muted small">Regressions grouped by identical structure.</p>');
 
-    // Grouping Logic
     const groups = [];
     table_regs.forEach(reg => {
         const struc = get_resolved_structure(reg, table_regs);
         const sig = JSON.stringify(struc);
-
         let group = groups.find(g => g.sig === sig);
         if (!group) {
             group = { sig: sig, regids: [], data: struc };
@@ -73,14 +65,11 @@ function update_table_summary_panel(tabid) {
         group.regids.push(reg.regid);
     });
 
-    // Rendering Groups
     groups.forEach(g => {
         const regList = g.regids.join(", ");
-
         let html = `<div class="summary-group">`;
         html += `<div><strong>Regressions:</strong> <span class="summary-reg-list">${regList}</span></div>`;
 
-        // 1. Tags
         if (g.data.tags) {
              const tags = g.data.tags.split(',').map(t => t.trim()).filter(t => t);
              if (tags.length > 0) {
@@ -96,12 +85,10 @@ function update_table_summary_panel(tabid) {
              }
         }
 
-        // 2. Variables (Compact Table)
         if (g.data.vars && g.data.vars.length > 0) {
              html += '<table class="class-table table-condensed" style="margin-top:5px; margin-bottom:5px;">';
              html += '<thead><tr><th style="width:10%">Role</th><th>Label</th><th>Code</th></tr></thead><tbody>';
              g.data.vars.forEach(v => {
-                 // Format Role Badge
                  let typeBadge = v.var_type;
                  if (v.var_type === 'd') typeBadge = '<span class="var-type-badge" style="background:#dff0d8;border-color:#d6e9c6;color:#3c763d;">Dep</span>';
                  else if (v.var_type === 'x_eff') typeBadge = '<span class="var-type-badge" style="background:#d9edf7;border-color:#bce8f1;color:#31708f;">Eff</span>';
@@ -117,7 +104,6 @@ function update_table_summary_panel(tabid) {
              html += '</tbody></table>';
         }
 
-        // 3. Dimensions (Inline list)
         if (g.data.dims && g.data.dims.length > 0) {
             html += '<div class="summary-dim-line"><strong>Dims:</strong> ';
             const dimStrs = g.data.dims.map(d => {
@@ -129,18 +115,38 @@ function update_table_summary_panel(tabid) {
             html += dimStrs.join(', ');
             html += '</div>';
         }
-
-        html += `</div>`; // End summary-group
+        html += `</div>`;
         $detail.append(html);
     });
 }
 
 /**
- * Updates the right-hand panel with DETAILED classification info for a specific regression.
+ * Highlights the regression group (column) in the table.
+ */
+function highlight_regression_group(regid) {
+    // Clear existing group highlights
+    $(".active-regression-group").removeClass("active-regression-group");
+
+    if (!regid || !window.active_mapping || !window.active_mapping.reg_info) return;
+
+    const regInfo = window.active_mapping.reg_info[regid];
+    if (regInfo && regInfo.cell_ids) {
+        const ids = regInfo.cell_ids.split(',');
+        ids.forEach(id => {
+            $("#" + id.trim()).addClass("active-regression-group");
+        });
+    }
+}
+
+/**
+ * Updates the right-hand panel with DETAILED classification info.
  */
 function update_classification_panel(tabid, regid) {
     const $detail = $("#classify-details");
     $detail.empty();
+
+    // Store current active regression ID for context
+    $detail.data("regid", regid);
 
     if (!window.all_classifications || !Array.isArray(window.all_classifications)) return;
 
@@ -151,10 +157,11 @@ function update_classification_panel(tabid, regid) {
         return;
     }
 
-    // Add a "Back" button to return to summary
+    // Action 3: Highlight the regression in the table
+    highlight_regression_group(regid);
+
     $detail.append(`<button class="btn btn-xs btn-default pull-right" onclick="update_table_summary_panel('${tabid}')"><span class="glyphicon glyphicon-arrow-left"></span> Summary</button>`);
 
-    // --- Helper: Section Builder ---
     function buildSection(title, contentHtml) {
         if (!contentHtml) return;
         $detail.append(`
@@ -165,7 +172,6 @@ function update_classification_panel(tabid, regid) {
         `);
     }
 
-    // --- 1. Header & Description ---
     let headerHtml = `<div class="class-desc">${record.short_descr || "No description provided."}</div>`;
 
     if (record.regression_tags) {
@@ -192,7 +198,6 @@ function update_classification_panel(tabid, regid) {
 
     buildSection(`Regression: ${record.regid}`, headerHtml);
 
-    // --- 2. Variables (Vars) ---
     if (record.vars && Array.isArray(record.vars) && record.vars.length > 0) {
         let varsHtml = '<table class="class-table"><thead><tr><th>Role</th><th>Article Label</th><th>Code Var</th></tr></thead><tbody>';
 
@@ -206,22 +211,20 @@ function update_classification_panel(tabid, regid) {
             else if (v.var_type === 'x_co') typeBadge = '<span class="var-type-badge">Ctrl</span>';
 
             let unitStr = v.unit ? `<br><small class="text-muted">Unit: ${v.unit}</small>` : '';
-            let cellLink = '';
-            if (v.cell_id_estimate) {
-                cellLink = ` <span class="cell-link class-cell-interaction" data-cellid="${v.cell_id_estimate}" title="Show in table"> <span class="glyphicon glyphicon-map-marker"></span></span>`;
-            }
 
-            varsHtml += `<tr>
+            const cellAttr = v.cell_id_estimate ? ` data-cellid="${v.cell_id_estimate}"` : '';
+            const rowClass = 'interactive-row';
+
+            varsHtml += `<tr class="${rowClass}"${cellAttr}>
                 <td>${typeBadge}</td>
                 <td>${label}${unitStr}</td>
-                <td>${codeVar}${cellLink}</td>
+                <td>${codeVar}</td>
             </tr>`;
         });
         varsHtml += '</tbody></table>';
         buildSection("Variables", varsHtml);
     }
 
-    // --- 3. Dimensions ---
     let dimsToRender = record.dimensions;
     let dimNote = "";
     if (record.dimensions_same_as_regid) {
@@ -256,18 +259,18 @@ function update_classification_panel(tabid, regid) {
         buildSection("Dimensions", dimNote);
     }
 
-    // --- 4. Reported Stats ---
     if (record.reported_stats && Array.isArray(record.reported_stats) && record.reported_stats.length > 0) {
         let statHtml = '<table class="class-table"><thead><tr><th>Statistic</th><th>Table Val</th><th>Code Val</th></tr></thead><tbody>';
         record.reported_stats.forEach(s => {
             const label = s.stat_label || '?';
             const valTab = (s.value_table !== null) ? s.value_table : '<span class="text-muted">-</span>';
             const valCode = (s.value_code !== null) ? s.value_code : '<span class="text-muted">-</span>';
-            let cellLink = s.cell_id ? ` <span class="cell-link class-cell-interaction" data-cellid="${s.cell_id}"><span class="glyphicon glyphicon-map-marker"></span></span>` : '';
+            const cellAttr = s.cell_id ? ` data-cellid="${s.cell_id}"` : '';
+            const rowClass = 'interactive-row';
 
-            statHtml += `<tr>
+            statHtml += `<tr class="${rowClass}"${cellAttr}>
                 <td>${label}</td>
-                <td>${valTab}${cellLink}</td>
+                <td>${valTab}</td>
                 <td>${valCode}</td>
             </tr>`;
         });
@@ -276,10 +279,10 @@ function update_classification_panel(tabid, regid) {
     }
 }
 
-// Initialization and Events
+// Events
 $(document).ready(function() {
 
-    // 1. Data Loading (External mode support)
+    // Data Loading
     if ((typeof window.all_classifications === 'undefined' || window.all_classifications === null) &&
          typeof window.classification_file !== 'undefined' && window.classification_file) {
 
@@ -290,7 +293,6 @@ $(document).ready(function() {
             })
             .then(data => {
                 window.all_classifications = data;
-                // Once loaded, trigger update for current tab if any
                 const activeTab = $("#tabtabs li.active > a").attr("href");
                 if(activeTab) {
                     const tabid = activeTab.replace("#tabtab", "");
@@ -301,7 +303,6 @@ $(document).ready(function() {
                 $("#classify-details").html('<div class="alert alert-danger">Failed to load data.</div>');
             });
     } else {
-        // Data already embedded, init first view
         const activeTab = $("#tabtabs li.active > a").attr("href");
         if(activeTab) {
             const tabid = activeTab.replace("#tabtab", "");
@@ -309,53 +310,64 @@ $(document).ready(function() {
         }
     }
 
-    // 2. Tab Change Listener -> Show Summary
+    // Tab Change
     $(document).on('shown.bs.tab', '#tabtabs a[data-toggle="tab"]', function (e) {
-        const target = $(e.target).attr("href"); // activated tab
+        const target = $(e.target).attr("href");
         const tabid = target.replace("#tabtab", "");
-        // Clear highlights and show summary
         if(window.clear_all_highlights) window.clear_all_highlights();
         update_table_summary_panel(tabid);
     });
 
-    // 3. Tab Click Listener -> Force Summary if already active
+    // Tab Click
     $("#tabtabs").on('click', 'a[data-toggle="tab"]', function (e) {
         const target = $(this).attr("href");
         const parentLi = $(this).parent();
         if(parentLi.hasClass('active')) {
              const tabid = target.replace("#tabtab", "");
-             // Clear highlights and show summary
              if(window.clear_all_highlights) window.clear_all_highlights();
              update_table_summary_panel(tabid);
         }
     });
 
-    // 4. Cell Click -> Show Details
+    // Right Panel Row Click
+    $(document).on("click", "#classify-col-div .interactive-row", function(e) {
+        const cellId = $(this).data("cellid");
+        const currentRegId = $("#classify-details").data("regid");
+
+        // 1. Clear previous but re-apply regression highlight
+        if(window.clear_all_highlights) window.clear_all_highlights();
+        if(currentRegId) highlight_regression_group(currentRegId);
+
+        if (cellId) {
+            // 2. Highlight cell (Action 2)
+            const match = cellId.match(/^c(\d+)_/);
+            const tabid = match ? match[1] : null;
+            if (tabid && window.highlight_cells) {
+                window.highlight_cells(tabid, cellId);
+            }
+
+            // 3. Highlight code (Action 1)
+            if (window.active_mapping && window.active_mapping.cell_map) {
+                const info = window.active_mapping.cell_map[cellId];
+                if (info && info.script_num && info.code_line && window.highlight_code) {
+                     window.highlight_code(info.script_num, info.code_line, info.runid, null);
+                }
+            }
+        }
+    });
+
+    // Table Cell Click
     $(document).on("click", ".tabnum, [id^=c][id*=_]", function(event) {
         const cell_id = event.currentTarget.id;
         if (window.active_mapping && window.active_mapping.cell_map && window.active_mapping.cell_map[cell_id]) {
             const info = window.active_mapping.cell_map[cell_id];
 
-            // Get tabid from the container if not explicit
             const $tabPane = $(event.currentTarget).closest('.tab-pane[id^="tabtab"]');
             const tabid = $tabPane.length ? $tabPane.attr('id').replace('tabtab', '') : null;
 
             if (info.regid && tabid) {
+                // update_classification_panel will call highlight_regression_group
                 update_classification_panel(tabid, info.regid);
-            }
-        }
-    });
-
-    // 5. Interaction from right-panel back to table
-    $(document).on("click", ".class-cell-interaction", function(e) {
-        e.preventDefault();
-        const cellId = $(this).data("cellid");
-        if (cellId && window.highlight_cells) {
-            const match = cellId.match(/^c(\d+)_/);
-            const tabid = match ? match[1] : null;
-            if (tabid) {
-                if (window.clear_all_highlights) window.clear_all_highlights();
-                window.highlight_cells(tabid, cellId);
             }
         }
     });
