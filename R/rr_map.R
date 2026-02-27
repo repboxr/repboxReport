@@ -6,6 +6,7 @@ example = function() {
   project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
   project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_10_4_6"
 
+  project_dir = "/home/rstudio/repbox/projects_gha_new/aejapp_1_2_4"
   options(warn=2)
   # Generate report with default options (embedded data)
   opts = rr_map_report_opts(embed_data = FALSE)
